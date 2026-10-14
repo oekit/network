@@ -5,7 +5,7 @@ import (
 	"errors"
 	"sync"
 
-	"github.com/yi-nology/ekit-observability/observability/logx"
+	"github.com/yi-nology/ekit-logx"
 )
 
 // hubLog 是 streamx hub 专用 logger(sink emit 失败留痕)。

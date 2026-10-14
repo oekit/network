@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/nats-io/nats.go"
-	"github.com/yi-nology/ekit-observability/middleware/traceid"
+	"github.com/yi-nology/ekit-tracing/traceid"
 )
 
 // TestExtractTraceCtx_NilMsg verifies that a nil *nats.Msg yields a bare context.

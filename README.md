@@ -1,49 +1,58 @@
 # ekit-network
 
-> 网络客户端层——HTTP 客户端（服务发现/熔断/重试/指标）、WebSocket、NATS、消息队列抽象。
+> 轻量网络客户端——WebSocket、NATS、消息队列抽象、连接与流工具。
 
 本仓库是 [ekit](https://git.enjoye.top/enjoydream/ekit)（`git.enjoye.top/enjoydream/ekit` v0.34.0）
-按框架耦合分层拆分出的独立 Go module，属于 **yi-nology** ekit 子项目矩阵。
+拆分出的独立 Go module，属于 **yi-nology** ekit 子项目矩阵（Round-2 深拆粒度）。
 
 ## 安装
 
 ```bash
-go get github.com/yi-nology/ekit-network@v0.1.0
+go get github.com/yi-nology/ekit-network@v0.2.0
 ```
 
 ## 包清单
 
-- `network/httpx/` — Hertz Client 高层封装：NNS 服务发现、熔断（gobreaker）、指数退避重试、Prometheus 弹性指标、OTel 透传、实例权重贯通
-- `network/loadbalance/` — 加权负载均衡策略
-- `network/wsutil/` — WebSocket 广播器（背压安全）
-- `network/nats/`、`network/mq/` — NATS 客户端与 MQ 抽象
-- `network/conn/`、`network/streamx/` — 连接管理与流工具
-- `network/octopus/` — Octopus 推送客户端
+- \`wsutil/\` — WebSocket 广播器（背压安全）
+- \`nats/\`、\`mq/\` — NATS 客户端与 MQ 抽象
+- \`conn/\`、\`streamx/\` — 连接管理与流工具
+- \`octopus/\` — Octopus 推送客户端
+
+> HTTP 客户端（httpx）与负载均衡已迁 [ekit-httpx](https://github.com/yi-nology/ekit-httpx)。
 
 ## 依赖关系
 
-子项目矩阵与依赖方向（自底向上）：
+子项目矩阵与依赖方向（自底向上，19 仓）：
 
 ```
-ekit-core                      纯工具层（零内部依赖）
-  └─ ekit-observability        日志/追踪/指标门面
-       └─ ekit-registry        注册发现 + 配置
-            ├─ ekit-data       存储层
-            ├─ ekit-network    网络客户端
-            │    └─ ekit-nns   服务治理客户端
-            │         └─ ekit-bootstrap  应用引导
-            ├─ ekit-hertz      Hertz 生态
-            ├─ ekit-kitex      Kitex 生态
-            └─ ekit-workflow   流程编排
+ekit-core            文本/数据工具 + governance/lifecycle/version      （零内部依赖）
+ekit-concurrency     并发与流控原语                                     （零内部依赖）
+ekit-logx            日志门面 + shutdown                                （零内部依赖）
+ekit-istio           Istio Proxyless                                    （零内部依赖）
+  ekit-metrics       Prometheus 门面                          → core
+  ekit-tracing       OTel + traceid                           → logx
+  ekit-registry      注册发现 + 配置                          → core, logx
+    ekit-data        缓存抽象 + 定时任务                      → core, logx, concurrency
+      ekit-gorm      SQL/GORM 全家                            → core, logx
+      ekit-redis     Redis 全家                               → data, core, logx
+    ekit-httpx       HTTP 客户端 + 负载均衡                   → core, concurrency, logx, metrics, tracing, registry
+      ekit-nns       服务治理客户端                           → httpx, registry, core, logx, tracing, metrics
+        ekit-bootstrap 应用引导
+    ekit-middleware  Hertz 中间件栈                           → core, concurrency, logx, metrics, tracing, registry
+    ekit-hertz       Hertz 运行时/适配/instrumentation        → middleware, gorm, nns, registry, metrics, tracing, logx, core
+    ekit-kitex       Kitex 生态                               → nns, registry, core, concurrency, logx, metrics
+  ekit-workflow      流程编排                                 → concurrency, logx
 ```
 
-依赖：[ekit-core](https://github.com/yi-nology/ekit-core)、[ekit-observability](https://github.com/yi-nology/ekit-observability)、[ekit-registry](https://github.com/yi-nology/ekit-registry)。
+> 注：`ekit-observability` 已在 Round-2 深拆中解散——logx 迁 [ekit-logx]、metrics 迁 [ekit-metrics]、
+> tracing/traceid 迁 [ekit-tracing]、shutdown 迁 [ekit-logx]；原仓库已归档。
+
+依赖：[ekit-core](https://github.com/yi-nology/ekit-core)、[ekit-logx](https://github.com/yi-nology/ekit-logx)、[ekit-tracing](https://github.com/yi-nology/ekit-tracing)、[ekit-concurrency](https://github.com/yi-nology/ekit-concurrency)。
 
 ## 与 ekit 单体仓库的关系
 
-- 代码与 ekit v0.34.0 等价，仅 module 路径从 `git.enjoye.top/enjoydream/ekit/...` 改为 `github.com/yi-nology/ekit-network/...`
-- 后续演进以各子仓库独立发版（SemVer）；ekit 单体仓库保留完整历史与架构文档（docs/PLATFORM_CONTRACT.md）
-- 开发规范（命名/错误处理/并发安全/日志门面）沿用 ekit AGENTS.md 约定
+- 代码与 ekit v0.34.0 等价，module 路径 `git.enjoye.top/enjoydream/ekit/...` → `github.com/yi-nology/ekit-network/...`
+- 各子仓库独立发版（SemVer）；开发规范沿用 ekit AGENTS.md 约定
 
 ## License
 
