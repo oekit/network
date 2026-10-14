@@ -3,10 +3,10 @@ package httpx
 import (
 	"context"
 
-	"github.com/yi-nology/ekit-observability/observability/metrics/resilience"
 	"github.com/cloudwego/hertz/pkg/app/client"
 	"github.com/cloudwego/hertz/pkg/common/config"
 	"github.com/cloudwego/hertz/pkg/protocol"
+	"github.com/yi-nology/ekit-observability/observability/metrics/resilience"
 	"sync/atomic"
 	"time"
 )

@@ -11,12 +11,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yi-nology/ekit-observability/middleware/traceid"
-	"github.com/yi-nology/ekit-registry/registry"
 	"github.com/cloudwego/hertz/pkg/protocol"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/sony/gobreaker"
+	"github.com/yi-nology/ekit-observability/middleware/traceid"
+	"github.com/yi-nology/ekit-registry/registry"
 )
 
 type requestSnapshot struct {

@@ -7,9 +7,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nats-io/nats.go"
 	"github.com/yi-nology/ekit-observability/middleware/traceid"
 	"github.com/yi-nology/ekit-observability/observability/logx"
-	"github.com/nats-io/nats.go"
 )
 
 var log = logx.Delegating("nats")

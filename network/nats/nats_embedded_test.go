@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yi-nology/ekit-observability/middleware/traceid"
 	natsserver "github.com/nats-io/nats-server/v2/test"
 	"github.com/nats-io/nats.go"
+	"github.com/yi-nology/ekit-observability/middleware/traceid"
 )
 
 // newTestClient starts an embedded NATS server on a random port and returns

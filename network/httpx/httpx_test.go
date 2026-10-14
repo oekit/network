@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yi-nology/ekit-network/network/loadbalance"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/sony/gobreaker"
+	"github.com/yi-nology/ekit-network/network/loadbalance"
 )
 
 func TestNewClient_DefaultTimeout(t *testing.T) {
