@@ -6,8 +6,8 @@ require (
 	github.com/nats-io/nats-server/v2 v2.14.6
 	github.com/nats-io/nats.go v1.53.1
 	github.com/yi-nology/ekit-concurrency v0.1.0
-	github.com/yi-nology/ekit-logx v0.1.0
-	github.com/yi-nology/ekit-tracing v0.1.0
+	github.com/yi-nology/ekit-logx v0.1.1
+	github.com/yi-nology/ekit-tracing v0.1.1
 )
 
 require (

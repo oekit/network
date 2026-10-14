@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
-	"github.com/yi-nology/ekit-tracing/traceid"
 	"github.com/yi-nology/ekit-logx"
+	"github.com/yi-nology/ekit-tracing/traceid"
 )
 
 var log = logx.Delegating("nats")
