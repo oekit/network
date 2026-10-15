@@ -22,8 +22,8 @@ github.com/yi-nology/ekit-concurrency v0.1.0 h1:n7D/x/QL2dH7PyBf2xyte/YfKCmH2oa7
 github.com/yi-nology/ekit-concurrency v0.1.0/go.mod h1:sPFjLKzX/iehRgu2IG6OluRqyw+HeO3S+Mlew2sR87U=
 github.com/yi-nology/ekit-logx v0.1.1 h1:r7c0HlYVqeKLBZdKJo+3PirjiCbdnyIgs1Dkj67XVqk=
 github.com/yi-nology/ekit-logx v0.1.1/go.mod h1:CZSIsEzykHBXyuRJ/XF6cRWZMGAX/kFL7czBcACEOUE=
-github.com/yi-nology/ekit-tracing v0.1.0 h1:zL0gzhPyB3D35/cD/CTUZGMo7fmzhQ6LzkxBt4/FzfE=
-github.com/yi-nology/ekit-tracing v0.1.0/go.mod h1:t9uD28a+YO+daCTcip3b6zcxnMpmLyOG85AqE0VACaU=
+github.com/yi-nology/ekit-tracing v0.1.1 h1:XmdzOOLzgp/hDT3u67Z4pceXeLdHYIbZaNc0zsPjH5E=
+github.com/yi-nology/ekit-tracing v0.1.1/go.mod h1:6SXb/IYFdAg3no+N4vBFYXfdJSHQ3Yrz0/C72XjwdOI=
 golang.org/x/crypto v0.55.0 h1:+KWHjbgOaAQ66dh/YlkZKHlz9ZUlq61AFirAR9ntP8M=
 golang.org/x/crypto v0.55.0/go.mod h1:uq0V9dE/fzQuJtbnL+2EhWOE63vo164FY8xqEnV9xis=
 golang.org/x/sys v0.21.0/go.mod h1:/VUhepiaJMQUp4+oa/7Zr1D23ma6VTLIYjOOTFZPUcA=
