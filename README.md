@@ -10,7 +10,7 @@
 ## 安装
 
 ```bash
-go get github.com/oekit/network@v0.2.0
+go get github.com/oekit/network@v0.2.4
 ```
 
 ## 包清单
