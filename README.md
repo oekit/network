@@ -11,7 +11,7 @@
 ## 安装
 
 ```bash
-go get github.com/oekit/network@v0.2.4
+go get github.com/oekit/network@v0.2.6
 ```
 
 ## 能做什么
