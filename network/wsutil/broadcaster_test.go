@@ -270,11 +270,8 @@ func TestBroadcast_RunLoopStaysResponsiveWithSlowConn(t *testing.T) {
 	// 慢连接的移除在广播 goroutine 内异步完成（Close → 写失败 → 注销），
 	// CI 慢速 runner 上调度可能滞后——轮询等待而非立即断言。
 	deadline := time.Now().Add(5 * time.Second)
-	for {
-		if b.GetRoomCount("room") == 1 {
-			break
-		}
-		if time.Since(deadline) >= 0 && time.Now().After(deadline) {
+	for b.GetRoomCount("room") != 1 {
+		if time.Now().After(deadline) {
 			t.Fatalf("room count = %d, want 1 (slow conn removed after failed write)", b.GetRoomCount("room"))
 		}
 		time.Sleep(20 * time.Millisecond)
