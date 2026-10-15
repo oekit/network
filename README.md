@@ -14,16 +14,25 @@
 go get github.com/oekit/network@v0.2.4
 ```
 
-## 快速使用
+## 能做什么
 
+- **wsutil**：WebSocket 广播器（房间模型、背压安全、写超时）
+- **nats**：NATS 客户端封装（JSON 队列、trace 提取）
+- **conn/streamx**：连接管理与流式 hub
+- **octopus**：Octopus 推送客户端
+- 轻量无捆绑：不拖 HTTP 客户端栈（那在 oekit/httpx）
+
+## 使用示例
+
+### WebSocket 房间广播
 ```go
 import "github.com/oekit/network/wsutil"
 
 b := wsutil.NewBroadcaster()
+defer b.Close()
 b.Register("room:1", conn)
-b.Broadcast("room:1", []byte("hello")) // 背压安全
+b.Broadcast("room:1", []byte(`{"type":"progress","pct":50}`))
 ```
-
 ## 包清单
 
 - \`wsutil/\` — WebSocket 广播器（背压安全）
