@@ -267,8 +267,17 @@ func TestBroadcast_RunLoopStaysResponsiveWithSlowConn(t *testing.T) {
 		t.Fatal("second Broadcast blocked forever — run loop still stuck")
 	}
 	b.Unregister("room", fast)
-	if got := b.GetRoomCount("room"); got != 1 {
-		t.Errorf("room count = %d, want 1 (slow conn removed after failed write)", got)
+	// 慢连接的移除在广播 goroutine 内异步完成（Close → 写失败 → 注销），
+	// CI 慢速 runner 上调度可能滞后——轮询等待而非立即断言。
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if b.GetRoomCount("room") == 1 {
+			break
+		}
+		if time.Since(deadline) >= 0 && time.Now().After(deadline) {
+			t.Fatalf("room count = %d, want 1 (slow conn removed after failed write)", b.GetRoomCount("room"))
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 
