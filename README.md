@@ -3,6 +3,7 @@
 > 轻量网络客户端——WebSocket、NATS、消息队列抽象、连接与流工具。
 
 > 项目主页：**https://oekit.github.io/** · 名称由来：**O**pen **E**asy **Kit**（开源 · 易用 · 工具集合）
+> 🤖 AI Agent：本仓规范与硬规则见 [AGENTS.md](AGENTS.md)；机器可读索引见 [llms.txt](https://oekit.github.io/llms.txt)（接口签名以源码为准）。
 
 本仓库是 [ekit](https://git.enjoye.top/enjoydream/ekit)（`git.enjoye.top/enjoydream/ekit` v0.34.0）
 拆分出的独立 Go module，属于 **oekit** oekit（Open Easy Kit）模块矩阵。
@@ -11,6 +12,16 @@
 
 ```bash
 go get github.com/oekit/network@v0.2.4
+```
+
+## 快速使用
+
+```go
+import "github.com/oekit/network/wsutil"
+
+b := wsutil.NewBroadcaster()
+b.Register("room:1", conn)
+b.Broadcast("room:1", []byte("hello")) // 背压安全
 ```
 
 ## 包清单
