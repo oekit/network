@@ -6,8 +6,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/yi-nology/ekit-concurrency/async"
-	"github.com/yi-nology/ekit-logx"
+	"github.com/oekit/concurrency/async"
+	"github.com/oekit/logx"
 )
 
 // wsLog 是 wsutil 包专用 logger(marshal 失败、慢消费者告警)。

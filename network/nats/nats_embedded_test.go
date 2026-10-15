@@ -11,7 +11,7 @@ import (
 
 	natsserver "github.com/nats-io/nats-server/v2/test"
 	"github.com/nats-io/nats.go"
-	"github.com/yi-nology/ekit-tracing/traceid"
+	"github.com/oekit/tracing/traceid"
 )
 
 // newTestClient starts an embedded NATS server on a random port and returns

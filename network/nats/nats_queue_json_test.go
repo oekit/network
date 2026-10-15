@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yi-nology/ekit-tracing/traceid"
+	"github.com/oekit/tracing/traceid"
 )
 
 // TestQueueSubscribeJSON_TraceIDExtracted covers the QueueSubscribeJSON path

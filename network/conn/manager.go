@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yi-nology/ekit-concurrency/async"
-	"github.com/yi-nology/ekit-logx"
+	"github.com/oekit/concurrency/async"
+	"github.com/oekit/logx"
 )
 
 var log = logx.Delegating("conn")
