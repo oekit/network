@@ -1,9 +1,11 @@
-# ekit-network
+# network
 
 > 轻量网络客户端——WebSocket、NATS、消息队列抽象、连接与流工具。
 
+> 项目主页：**https://oekit.github.io/oekit/** · 名称由来：**O**pen **E**asy **Kit**（开源 · 易用 · 工具集合）
+
 本仓库是 [ekit](https://git.enjoye.top/enjoydream/ekit)（`git.enjoye.top/enjoydream/ekit` v0.34.0）
-拆分出的独立 Go module，属于 **yi-nology** ekit 子项目矩阵（Round-2 深拆粒度）。
+拆分出的独立 Go module，属于 **yi-nology** oekit（Open Easy Kit）模块矩阵。
 
 ## 安装
 
