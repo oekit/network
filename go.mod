@@ -1,6 +1,6 @@
 module github.com/oekit/network
 
-go 1.26.0
+go 1.24.0
 
 require (
 	github.com/nats-io/nats-server/v2 v2.15.1
