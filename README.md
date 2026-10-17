@@ -8,7 +8,7 @@
 ## 安装
 
 ```bash
-go get github.com/oekit/network@v0.5.3
+go get github.com/oekit/network@v0.5.4
 ```
 
 ## 这个仓库做什么
