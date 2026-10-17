@@ -1,5 +1,9 @@
 # Changelog — oekit/network
 
+## [v0.5.2] — 2026-10-17
+
+- concurrency 地板 v0.5.2 → v0.5.4
+
 ## [v0.1.1] — 2026-10-17
 
 - fix(deps): 内部依赖地板 logx v0.2.0 → v0.5.0；go 维持 1.26.0——k8s.io/client-go 生态声明 go1.26，暂不做生态级回退
