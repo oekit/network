@@ -1,5 +1,7 @@
 # Changelog — oekit/network
 
+## [- fix(deps): logx 地板 v0.5.0 → v0.6.0（零代码改动）
+
 ## [v0.5.2] — 2026-10-17
 
 - concurrency 地板 v0.5.2 → v0.5.4
