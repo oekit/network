@@ -1,10 +1,10 @@
 # AGENTS.md — oekit/network
 
-> 轻量网络客户端——conn 连接管理 / mq 队列抽象 / nats / streamx 流工具 / wsutil WebSocket 广播
-> 当前版本：`v0.5.0` · module：`github.com/oekit/network` · org：[oekit = Open Easy Kit](https://oekit.github.io)
+> 轻量网络客户端——WebSocket/NATS/MQ 抽象、连接与流工具
+> 当前版本：`v0.5.1` · module：`github.com/oekit/network` · org：[oekit = Open Easy Kit](https://oekit.github.io)
 
 ## 本仓包含
-`conn/`、`mq/`、`nats/`、`streamx/`、`wsutil/`（均在仓库根，import 路径 `github.com/oekit/network/<name>`）
+`conn/`、`mq/`、`nats/`、`streamx/`、`wsutil/`
 
 ## 硬规则速览（全矩阵适用）
 
@@ -31,7 +31,7 @@
 
 ### 生命周期
 - 组件 Close 统一 `Close(ctx) error` 签名 + sync.Once 幂等
-- 应用骨架用 `github.com/oekit/bootstrap/bootstrap`；**userFn 返回即服务结束，
+- 应用骨架用 `github.com/oekit/bootstrap/bootstrap.Run`；**userFn 返回即服务结束，
   长驻服务必须 `<-app.Context().Done()` 阻塞**
 
 ### Option 与命名
@@ -42,16 +42,10 @@
 - SemVer；0.x 阶段 minor 允许 breaking；发版 = 打 annotated tag 推远端（CI 自动跑 lint+test）
 - module 路径 = `github.com/oekit/<name>`；**改 module 路径必须同步**：
   全部 import、go.mod、README 安装行、logx caller 启发式（若涉及 logx）
-- **本仓自 v0.5.0 起算**：历史与旧 tag 已清空，不保证对 v0.5.0 之前任何坐标兼容
-
-### 范围红线
-- 只收通用网络客户端原语（连接、队列抽象、NATS、流、WebSocket 广播）
-- 业务推送 / IM 通道 / 具体协议产品适配不属于本模块，请在业务仓或 contrib 类仓自持
 
 ### 文档
 - 本仓 README 的「矩阵总览」表由脚本生成，结构变化后需重新生成
-- 包文档放 doc.go；导出符号必有 godoc
+- 历史完整规范见 ekit 单体仓（git.enjoye.top/enjoydream/ekit，冻结维护）的 AGENTS.md 与 docs/
 
 ## 本仓范围
 
-通用轻量网络客户端集。与 httpx 的区别：本仓不强制服务发现/熔断/重试等重语义。
