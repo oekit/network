@@ -1,0 +1,19 @@
+# Changelog — oekit/network
+
+## [v0.5.0] — 2026-10-17
+
+全新起点：历史与旧版本号已全部清空，自本版重新起算。
+
+- **模块布局收平**：包从 `network/<name>` 双层目录提为仓库根一级
+  （`conn/`、`mq/`、`nats/`、`streamx/`、`wsutil/`），import 路径为
+  `github.com/oekit/network/<name>`，不再多一层 `network/network/`。
+- **模块边界**：通用轻量网络客户端集——连接管理、消息队列抽象、NATS、
+  流工具、WebSocket 广播。业务推送客户端不属于本模块，不在范围内。
+- 包能力面：
+  | 包 | 做什么 |
+  |---|---|
+  | `conn` | 连接管理 |
+  | `mq` | 消息队列抽象 |
+  | `nats` | NATS 客户端（嵌入式测试友好）+ JetStream |
+  | `streamx` | 流工具（事件、Hub、SSE sink） |
+  | `wsutil` | WebSocket 广播器（房间注册、背压安全） |
