@@ -1,5 +1,9 @@
 # Changelog — oekit/network
 
+## [v0.5.1] — 2026-10-17
+
+- fix(deps): 内部依赖地板全量对齐最新——concurrency v0.5.2、logx v0.5.0、tracing v0.2.1；go 维持 1.26.0（tracing/OTel 生态传导）
+
 ## [v0.5.0] — 2026-10-17
 
 全新起点：历史与旧版本号已全部清空，自本版重新起算。
