@@ -12,10 +12,6 @@
 
 - concurrency 地板 v0.5.2 → v0.5.4
 
-## [v0.1.1] — 2026-10-17
-
-- fix(deps): 内部依赖地板 logx v0.2.0 → v0.5.0；go 维持 1.26.0——k8s.io/client-go 生态声明 go1.26，暂不做生态级回退
-
 ## [v0.5.1] — 2026-10-17
 
 - fix(deps): 内部依赖地板全量对齐最新——concurrency v0.5.2、logx v0.5.0、tracing v0.2.1；go 维持 1.26.0（tracing/OTel 生态传导）
@@ -37,3 +33,7 @@
   | `nats` | NATS 客户端（嵌入式测试友好）+ JetStream |
   | `streamx` | 流工具（事件、Hub、SSE sink） |
   | `wsutil` | WebSocket 广播器（房间注册、背压安全） |
+## [v0.1.1] — 2026-10-17
+
+- fix(deps): 内部依赖地板 logx v0.2.0 → v0.5.0；go 维持 1.26.0——k8s.io/client-go 生态声明 go1.26，暂不做生态级回退
+
