@@ -1,5 +1,9 @@
 # Changelog — oekit/network
 
+## [v0.5.5] — 2026-10-19
+
+- build: 矩阵内依赖地板对齐（align_floors 不动点）：concurrency v0.5.4 → v0.17.0、logx v0.6.0 → v0.7.0
+
 ## [v0.5.4] — 2026-10-18
 
 - fix(deps): tracing v0.2.2 地板对齐（零代码改动）
