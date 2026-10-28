@@ -25,6 +25,7 @@ WebSocket 广播。与 [httpx](https://github.com/oekit/httpx) 的区别：这�
 | `mq` | `github.com/oekit/network/mq` | 消息队列抽象 |
 | `nats` | `github.com/oekit/network/nats` | NATS 客户端（嵌入式测试友好）+ JetStream |
 | `peercred` | `github.com/oekit/network/peercred` | unix socket 对端凭据（`SO_PEERCRED` 取 uid）+ 受信判定 |
+| `sshx` | `github.com/oekit/network/sshx` | SSH 客户端原语：两段界限的拨号（连接/握手分开界，另受调用方总预算压住）、私钥加载与密钥类型识别、公钥类型识别、空闲连接保活 |
 | `streamx` | `github.com/oekit/network/streamx` | 流工具（事件、Hub、SSE sink） |
 | `wsutil` | `github.com/oekit/network/wsutil` | WebSocket 广播器：房间注册、背压安全（慢连接超时跳过不拖死循环） |
 
@@ -58,6 +59,37 @@ if !trust.Trusted(uid, ok) {
 - 挂到 http.Server：`srv := &http.Server{ConnContext: peercred.ConnContext(nil)}`
   ⇒ 对端 uid 进请求 ctx（取不到时**不注入** ⇒ 读出来就是「未知」）；
 - 与「把 socket 权限收紧（0660 + 专属组）」是**互补**关系，不是替代。
+
+## SSH 客户端原语（sshx）
+
+`x/crypto/ssh` 给的是协议原语，**拨号这一步要做的判断一个都没替你做**——
+连接超时、握手超时、调用方的总预算、以及「超时」与「被拒绝」这两种失败的
+区分，都要自己写一遍。写错一次的后果不是报错难看，而是调用方永远等下去。
+
+```go
+signer, err := sshx.LoadSigner("/root/.ssh/id_rsa")
+if err != nil {
+    return err
+}
+client, err := sshx.Dial(ctx, "10.0.0.1:2222", &ssh.ClientConfig{
+    User:            "ops",
+    Auth:            []ssh.AuthMethod{ssh.PublicKeys(signer)},
+    HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+}, sshx.DialOptions{Budget: 10 * time.Second})
+```
+
+- **两段界限**：连接与握手分开界。`ClientConfig.Timeout` 只管 TCP 连接，
+  之后的握手跑在裸连接上**没有任何截止时间**——一个接受连接却从不说 SSH 的
+  端口会让调用方永远等下去，而降级路径永远轮不到它（快路径没「失败」，
+  它还在等）。`DialOptions.Budget` 再压住两者：给了两秒预算的调用方不该
+  坐在五秒握手里等一个自己不会用的结果；
+- **超时与拒绝分开说**：拒绝（`unable to authenticate`）是让调用方去降级的
+  信号，超时绝不能被打扮成一个拒绝；
+- **密钥类型提前问**：`DetectKeyType` / `PublicKeyType` 回答「这个密钥是什么
+  类型」。服务端常常接受并报告成功、客户端在登录时才拒绝它——两端判断不
+  一致时，中间没有任何东西会说明原因；
+- **保活**：`StartKeepAlive` 定期在连接上说句话，防止空闲连接被 NAT 或
+  防火墙静默掐断（被静默掐断的连接不报错——认出它的是命令那一步）。
 
 ## 边界
 
