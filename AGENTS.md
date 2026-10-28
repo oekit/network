@@ -4,7 +4,7 @@
 > 当前版本：`v0.5.6` · module：`github.com/oekit/network` · org：[oekit = Open Easy Kit](https://oekit.github.io)
 
 ## 本仓包含
-`conn/`、`mq/`、`nats/`、`streamx/`、`wsutil/`
+`conn/`、`mq/`、`nats/`、`peercred/`、`streamx/`、`wsutil/`
 
 ## 硬规则速览（全矩阵适用）
 
