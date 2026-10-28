@@ -2,7 +2,6 @@ package wsutil
 
 import (
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -70,7 +69,13 @@ func TestOutbox_WritesInOrder(t *testing.T) {
 func TestOutbox_OverflowNeverBlocks(t *testing.T) {
 	// 写入端会卡住，于是队列很快满。
 	block := make(chan struct{})
+	taken := make(chan struct{})
 	o := NewOutbox(func([]byte) error {
+		select {
+		case <-taken:
+		default:
+			close(taken)
+		}
 		<-block
 		return nil
 	}, OutboxOptions{QueueSize: 2})
@@ -81,7 +86,14 @@ func TestOutbox_OverflowNeverBlocks(t *testing.T) {
 
 	// 第一个帧被写协程取走（写端卡住），接下来两个填满队列。
 	o.Send([]byte("1"))
-	waitFor(t, "the first frame to be taken", func() bool { return o.Dropped() == 0 })
+	waitFor(t, "the writer to take the first frame", func() bool {
+		select {
+		case <-taken:
+			return true
+		default:
+			return false
+		}
+	})
 	o.Send([]byte("2"))
 	o.Send([]byte("3"))
 
@@ -99,23 +111,47 @@ func TestOutbox_OverflowNeverBlocks(t *testing.T) {
 	}
 }
 
-// TestOutbox_OverflowCallback 断言队列满时调用 OnOverflow。
-func TestOutbox_OverflowCallback(t *testing.T) {
+// TestOutbox_OverflowOnlyReports 断言队列满时**只报告、不处置**。
+//
+// 处置是业务决定：同一个「满了」，断开这条连接 / 断开对端 / 丢帧 / 退出本端
+// 都可能对。库替业务选一个，就把差异藏起来了。
+func TestOutbox_OverflowOnlyReports(t *testing.T) {
 	block := make(chan struct{})
 	defer close(block)
-	var overflow atomic.Int32
+	taken := make(chan struct{})
 	o := NewOutbox(func([]byte) error {
+		select {
+		case <-taken:
+		default:
+			close(taken)
+		}
 		<-block
 		return nil
-	}, OutboxOptions{QueueSize: 1, OnOverflow: func() { overflow.Add(1) }})
+	}, OutboxOptions{QueueSize: 1})
 	defer o.Close()
 
 	o.Send([]byte("1"))
-	waitFor(t, "the first frame to be taken", func() bool { return o.Dropped() == 0 })
+	waitFor(t, "the writer to take the first frame", func() bool {
+		select {
+		case <-taken:
+			return true
+		default:
+			return false
+		}
+	})
 	o.Send([]byte("2"))
-	o.Send([]byte("3"))
-
-	waitFor(t, "the overflow callback", func() bool { return overflow.Load() >= 1 })
+	if o.Send([]byte("3")) {
+		t.Error("a full queue must refuse the frame")
+	}
+	if o.Dropped() != 1 {
+		t.Errorf("Dropped = %d, want 1", o.Dropped())
+	}
+	// 关键：它没有被处置——管道还活着，调用方自己决定怎么办。
+	select {
+	case <-o.Done():
+		t.Error("the overflow must not close the pipe: the disposition is the caller's call")
+	default:
+	}
 }
 
 // TestOutbox_SendAfterCloseIsSafe 断言关闭之后再 Send 不 panic。

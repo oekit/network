@@ -30,5 +30,5 @@
 //	}, wsutil.OutboxOptions{QueueSize: 64})
 //	defer ob.Close()
 //
-//	ob.Send(frame) // 永不阻塞；队列满了按策略处理（默认断开这条连接）
+//	ob.Send(frame) // 永不阻塞；队列满了返回 false，处置由调用方决定
 package wsutil

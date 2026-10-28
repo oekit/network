@@ -27,7 +27,7 @@ WebSocket 广播。与 [httpx](https://github.com/oekit/httpx) 的区别：这�
 | `peercred` | `github.com/oekit/network/peercred` | unix socket 对端凭据（`SO_PEERCRED` 取 uid）+ 受信判定 |
 | `sshx` | `github.com/oekit/network/sshx` | SSH 客户端原语：两段界限的拨号（连接/握手分开界，另受调用方总预算压住）、私钥加载与密钥类型识别、公钥类型识别、空闲连接保活 |
 | `streamx` | `github.com/oekit/network/streamx` | 流工具（事件、Hub、SSE sink） |
-| `wsutil` | `github.com/oekit/network/wsutil` | WebSocket 推送原语：房间广播器（背压安全，慢连接超时跳过不拖死循环）+ 单连接的有界出站管道 `Outbox`（保证唯一写者、慢消费者不阻塞发送方）。两者都不依赖任何 websocket 库 |
+| `wsutil` | `github.com/oekit/network/wsutil` | WebSocket 推送原语：房间广播器（背压安全，慢连接超时跳过不拖死循环）+ 单连接的有界出站管道 `Outbox`（保证唯一写者、慢消费者不阻塞发送方，满了只报告不处置）。两者都不依赖任何 websocket 库 |
 
 ## 快速使用
 

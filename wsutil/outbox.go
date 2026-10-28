@@ -10,8 +10,9 @@ package wsutil
 // 队列还必须有界。客户端读得慢时，写者会卡在写上（TCP 背压），于是队列
 // 涨满；无界的队列会把「一个慢客户端」变成「服务端内存涨满」。
 //
-// 满了怎么办是调用方的决定：默认断开这条连接（websocket 推送的通行做法——
-// 宁可不推，也不拖着所有人一起卡住）。
+// 满了怎么办是**调用方**的决定：Send 只报告「入队成功没有」，不替业务选
+// 策略。同一个「满了」在不同场景下有多种正确处置——断开这条连接、断开对端、
+// 丢掉这一帧、退出本端——而库替业务选一个，就把差异藏起来了。
 //
 // 它**不依赖任何 websocket 库**：写入动作就是一个函数，所以 gorilla、
 // hertz-contrib、乃至任何自定义传输都能用同一份。
@@ -44,20 +45,12 @@ type Outbox struct {
 	closeOnce sync.Once
 	closed    atomic.Bool
 	dropped   atomic.Int64
-
-	// onOverflow 是队列满时的回调。nil 时默认是关闭这条连接。
-	onOverflow func()
 }
 
 // OutboxOptions 是 NewOutbox 的可选项。
 type OutboxOptions struct {
 	// QueueSize 出站队列长度。零即 DefaultOutboxQueueSize。
 	QueueSize int
-	// OnOverflow 队列满时被调用（默认：关闭这条连接）。
-	//
-	// 它在**发送方**的 goroutine 上被调用，所以要短——它不能阻塞，也不该
-	// 做重活。
-	OnOverflow func()
 }
 
 // NewOutbox 建一条出站管道并启动它的写协程。
@@ -69,10 +62,9 @@ func NewOutbox(write func([]byte) error, opts OutboxOptions) *Outbox {
 		size = DefaultOutboxQueueSize
 	}
 	o := &Outbox{
-		write:      write,
-		queue:      make(chan []byte, size),
-		done:       make(chan struct{}),
-		onOverflow: opts.OnOverflow,
+		write: write,
+		queue: make(chan []byte, size),
+		done:  make(chan struct{}),
 	}
 	o.wg.Add(1)
 	// GoSafe：写协程 panic 只许死这条连接，不许死整个进程——它在一个服务
@@ -83,8 +75,15 @@ func NewOutbox(write func([]byte) error, opts OutboxOptions) *Outbox {
 
 // Send 把一帧放进队列。
 //
-// 它**永不阻塞**：队列满时按 OnOverflow 的策略处理（默认关闭这条连接），
-// 返回 false。返回 true 只说明「进了队列」，不说明「已经写到网络上」。
+// 它**永不阻塞**：队列满时返回 false，返回 true 只说明「进了队列」，不说明
+// 「已经写到网络上」。
+//
+// **它不替调用方做处置**——满了之后是断开这条连接、断开对端、丢掉这一帧，
+// 还是退出本端，取决于场景。所以「满了」只报告、不动作：
+//
+//	if !ob.Send(frame) {
+//		closePeer(p) // 慢消费者：断开这条连接
+//	}
 //
 // 关闭之后再 Send 返回 false，不会 panic。
 func (o *Outbox) Send(msg []byte) bool {
@@ -96,11 +95,6 @@ func (o *Outbox) Send(msg []byte) bool {
 		return true
 	default:
 		o.dropped.Add(1)
-		if o.onOverflow != nil {
-			o.onOverflow()
-		} else {
-			o.Close()
-		}
 		return false
 	}
 }
