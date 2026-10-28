@@ -8,6 +8,7 @@ package sshx
 // 原因。所以「这个密钥是什么类型」得有一个能提前问的答案。
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -42,9 +43,12 @@ func LoadSigner(path string) (ssh.Signer, error) {
 //     agent 时 ssh-keygen 能读出公钥。
 //  3. 文件头嗅探。最后的手段，只能给出粗粒度的结论。
 //
+// ctx 管住第二级里那个外部进程：ssh-keygen 在一个卡住的 agent 上会一直
+// 等下去，而调用方不该为此无限期等下去。
+//
 // 读不出文件是错误（调用方拿到的路径就是错的）；读得出但认不出类型不是
 // 错误——返回 "unknown" 或粗粒度结论，让调用方自己去判断。
-func DetectKeyType(path string) (string, error) {
+func DetectKeyType(ctx context.Context, path string) (string, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return "", fmt.Errorf("cannot read %s: %w", path, err)
@@ -54,7 +58,7 @@ func DetectKeyType(path string) (string, error) {
 		return signer.PublicKey().Type(), nil
 	}
 	// 第二级：ssh-keygen。ssh-keygen 不在或拒绝了文件时落到第三级。
-	if out, kerr := exec.Command("ssh-keygen", "-y", "-f", path).Output(); kerr == nil {
+	if out, kerr := exec.CommandContext(ctx, "ssh-keygen", "-y", "-f", path).Output(); kerr == nil {
 		if fields := strings.Fields(string(out)); len(fields) > 0 {
 			return fields[0], nil
 		}

@@ -13,7 +13,7 @@ package sshx
 // 沉默的中间盒——会让调用方一直等下去。
 //
 // 那种等待是最危险的一种：降级路径本该在快路径用不了时接手，可快路径还没
-//「失败」——它还在等。于是降级永远轮不上，调用永远不返回。
+// 「失败」——它还在等。于是降级永远轮不上，调用永远不返回。
 //
 // 截止时间设在 socket 上，握手做完就撤掉：于是它只界握手，不界别的——
 // 一条跑几分钟的命令不能被那个「为了握手」的截止时间砍断。
@@ -104,17 +104,17 @@ func Dial(ctx context.Context, addr string, cc *ssh.ClientConfig, opts DialOptio
 		_ = conn.Close()
 		return nil, fmt.Errorf("set the handshake deadline on %s: %w", addr, err)
 	}
-	clientConn, chans, reqs, err := ssh.NewClientConn(conn, addr, cc)
-	if err != nil {
+	clientConn, chans, reqs, herr := ssh.NewClientConn(conn, addr, cc)
+	if herr != nil {
 		_ = conn.Close()
 		// 超时与拒绝是不同的失败，措辞要把它们分开：拒绝（"unable to
 		// authenticate"）是让调用方去降级的那个信号，而超时绝不能被打扮
 		// 成一个拒绝。
-		if ne, ok := err.(net.Error); ok && ne.Timeout() {
+		if ne, ok := herr.(net.Error); ok && ne.Timeout() {
 			return nil, fmt.Errorf("the SSH handshake with %s did not finish within %s: %w",
-				addr, handshake, err)
+				addr, handshake, herr)
 		}
-		return nil, fmt.Errorf("the SSH handshake with %s failed: %w", addr, err)
+		return nil, fmt.Errorf("the SSH handshake with %s failed: %w", addr, herr)
 	}
 	// 截止时间已经办完事。连接不能被那个「为了握手」的截止时间砍断。
 	_ = conn.SetDeadline(time.Time{})

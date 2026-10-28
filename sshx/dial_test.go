@@ -129,8 +129,8 @@ func TestDial_GivesUpOnAHandshakeThatNeverFinishes(t *testing.T) {
 	defer close(hold)
 	go func() {
 		for {
-			conn, err := ln.Accept()
-			if err != nil {
+			conn, cerr := ln.Accept()
+			if cerr != nil {
 				return
 			}
 			go func() {
@@ -202,8 +202,8 @@ func TestDial_BudgetCapsTheBounds(t *testing.T) {
 	defer close(hold)
 	go func() {
 		for {
-			conn, err := ln.Accept()
-			if err != nil {
+			conn, cerr := ln.Accept()
+			if cerr != nil {
 				return
 			}
 			go func() {
@@ -237,8 +237,8 @@ func TestDial_ContextDeadlineCapsTheHandshake(t *testing.T) {
 	defer close(hold)
 	go func() {
 		for {
-			conn, err := ln.Accept()
-			if err != nil {
+			conn, cerr := ln.Accept()
+			if cerr != nil {
 				return
 			}
 			go func() {

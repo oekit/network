@@ -15,7 +15,7 @@ package sshx
 //
 // 它能看见什么、看不见什么。传输层的错误说明连接没了，此时连接被标记为
 // 坏掉，下次调用会开一条新的而不是捡到一具尸体。但**被静默掐断**的连接
-//（包被丢弃、没有 RST）在这里不会报错——写操作进了本地缓冲，对端根本没
+// （包被丢弃、没有 RST）在这里不会报错——写操作进了本地缓冲，对端根本没
 // 听见。认出这一种是命令那一步的事，而命令那一步已经处理了：开不出通道
 // 就说明命令没到机器上，可以换一条连接重跑。
 
@@ -29,8 +29,12 @@ import (
 // DefaultKeepAliveInterval 是戳连接的间隔。
 const DefaultKeepAliveInterval = 30 * time.Second
 
-// keepAliveRequest 是 OpenSSH 的全局 keepalive 请求名。
-const keepAliveRequest = "keepalive@openssh.com"
+// KeepAliveRequest 是 OpenSSH 的全局 keepalive 请求名。
+//
+// 调用方拿着它往连接上发这个请求（`client.SendRequest(sshx.KeepAliveRequest,
+// false, nil)`）——WantReply 是 false，因为等回包意味着等一个回应，而一个
+// 既不应也不关的服务端会让这个请求卡在连接的整个余生里。
+const KeepAliveRequest = "keepalive@openssh.com"
 
 // keepAliveMissesTolerated 是连续失败多少次之后才判连接已死。
 //

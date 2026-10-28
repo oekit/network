@@ -1,6 +1,7 @@
 package sshx
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/pem"
@@ -36,7 +37,7 @@ func writePrivateKey(t *testing.T, name string) string {
 // 在登录时拒绝，两端判断不一致时中间没有任何东西会说明原因。
 func TestDetectKeyType_ED25519(t *testing.T) {
 	path := writePrivateKey(t, "id_ed25519")
-	kind, err := DetectKeyType(path)
+	kind, err := DetectKeyType(context.Background(), path)
 	if err != nil {
 		t.Fatalf("detect: %v", err)
 	}
@@ -47,7 +48,7 @@ func TestDetectKeyType_ED25519(t *testing.T) {
 
 // TestDetectKeyType_MissingFile 断言读不到文件是错误（路径就是错的）。
 func TestDetectKeyType_MissingFile(t *testing.T) {
-	if _, err := DetectKeyType(filepath.Join(t.TempDir(), "nope")); err == nil {
+	if _, err := DetectKeyType(context.Background(), filepath.Join(t.TempDir(), "nope")); err == nil {
 		t.Fatal("a missing key file should be an error")
 	}
 }
@@ -74,7 +75,7 @@ func TestDetectKeyType_FallsBackToHeader(t *testing.T) {
 			if err := os.WriteFile(path, []byte(c.head), 0o600); err != nil {
 				t.Fatalf("write: %v", err)
 			}
-			got, err := DetectKeyType(path)
+			got, err := DetectKeyType(context.Background(), path)
 			if err != nil {
 				t.Fatalf("detect: %v", err)
 			}
