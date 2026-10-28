@@ -1,7 +1,7 @@
 # AGENTS.md — oekit/network
 
 > 轻量网络客户端——WebSocket/NATS/MQ 抽象、连接与流工具
-> 当前版本：`v0.7.0` · module：`github.com/oekit/network` · org：[oekit = Open Easy Kit](https://oekit.github.io)
+> 当前版本：`v0.7.1` · module：`github.com/oekit/network` · org：[oekit = Open Easy Kit](https://oekit.github.io)
 
 ## 本仓包含
 `conn/`、`mq/`、`nats/`、`peercred/`、`sshx/`、`streamx/`、`wsutil/`
