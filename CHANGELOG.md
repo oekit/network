@@ -1,5 +1,21 @@
 # Changelog — oekit/network
 
+## [v0.6.1] — 2026-10-29
+
+- feat(sshx): 补 `ParseSinglePublicKey`——解析**恰好一把**公钥
+
+`ParsePublicKey` 按 authorized_keys 的语法逐行扫描：解析不了的行被跳过，取第一条能解析的。于是「第一行 ed25519、第二行 rsa」会被判成 rsa——而调用方接下来通常是把**整个字符串**存下去，堡垒机存的是两把钥匙，且会安静地接受那把 ed25519。**被检查的东西与被存下的东西不是同一个**，这类漏洞极难查。
+
+`ParseSinglePublicKey` 拒掉这种输入（多行 / rest 非空），并说清它与 `ParsePublicKey` 的分工：后者答「这里面有**一把**能用的钥匙吗」，前者答「这里面**只有**一把能用的钥匙吗」。要把这段字符串原样存进某个系统时，后者才是该问的那个。
+
+- fix(sshx): 握手超时的判定改走 `errors.As` —— 原来那条分支**是死代码**
+
+`x/crypto/ssh` 的 `NewClientConn` **永远**把错误包一层（`fmt.Errorf("ssh: handshake failed: %w", err)`）⇒ 返回值的动态类型是 `*fmt.wrapError`，**不实现 `net.Error`** ⇒ 直接类型断言 `herr.(net.Error)` **恒假** ⇒ 「did not finish within」这句话**永远不会出现**，握手超时被说成了「handshake failed」。
+
+为什么这条措辞值得修：**调用方靠它区分「超时」与「认证被拒」**，两者应对方式不同（超时换一条路重试，被拒则是凭据问题）。上游 `sshx.Dial` 的措辞与它取代的那份本地实现逐字相同，所以**本仓没有行为变化**；但那份本地实现搬上来时带着同一条假断言——现在一次修对，两边都对。
+
+判据从类型断言换成走错误链：`var ne net.Error; if errors.As(herr, &ne) && ne.Timeout()`。测试里加了一条断言（超时必须有专属措辞）——修之前它会红。
+
 ## [v0.6.0] — 2026-10-29
 
 - feat(sshx): SSH 客户端原语 —— 拨号、私钥、密钥类型识别、保活

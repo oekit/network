@@ -20,6 +20,7 @@ package sshx
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"time"
@@ -110,7 +111,13 @@ func Dial(ctx context.Context, addr string, cc *ssh.ClientConfig, opts DialOptio
 		// 超时与拒绝是不同的失败，措辞要把它们分开：拒绝（"unable to
 		// authenticate"）是让调用方去降级的那个信号，而超时绝不能被打扮
 		// 成一个拒绝。
-		if ne, ok := herr.(net.Error); ok && ne.Timeout() {
+		// errors.As, not a type assertion: x/crypto/ssh always wraps the
+		// handshake error ("ssh: handshake failed: %w"), so the value is a
+		// *fmt.wrapError and a direct assertion to net.Error NEVER matches
+		// — the timeout wording below was dead code, and the timeout came
+		// out dressed as a refusal.
+		var ne net.Error
+		if errors.As(herr, &ne) && ne.Timeout() {
 			return nil, fmt.Errorf("the SSH handshake with %s did not finish within %s: %w",
 				addr, handshake, herr)
 		}
