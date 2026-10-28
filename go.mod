@@ -4,10 +4,10 @@ go 1.26.0
 
 require (
 	github.com/nats-io/nats-server/v2 v2.15.1
-	github.com/nats-io/nats.go v1.54.0
-	github.com/oekit/concurrency v0.17.0
-	github.com/oekit/logx v0.7.0
-	github.com/oekit/tracing v0.2.2
+	github.com/nats-io/nats.go v1.55.0
+	github.com/oekit/concurrency v0.21.0
+	github.com/oekit/logx v0.7.1
+	github.com/oekit/tracing v0.3.0
 )
 
 require (
