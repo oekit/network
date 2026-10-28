@@ -24,6 +24,7 @@ WebSocket 广播。与 [httpx](https://github.com/oekit/httpx) 的区别：这�
 | `conn` | `github.com/oekit/network/conn` | 连接管理 |
 | `mq` | `github.com/oekit/network/mq` | 消息队列抽象 |
 | `nats` | `github.com/oekit/network/nats` | NATS 客户端（嵌入式测试友好）+ JetStream |
+| `peercred` | `github.com/oekit/network/peercred` | unix socket 对端凭据（`SO_PEERCRED` 取 uid）+ 受信判定 |
 | `streamx` | `github.com/oekit/network/streamx` | 流工具（事件、Hub、SSE sink） |
 | `wsutil` | `github.com/oekit/network/wsutil` | WebSocket 广播器：房间注册、背压安全（慢连接超时跳过不拖死循环） |
 
@@ -36,6 +37,27 @@ b := wsutil.NewBroadcaster()
 b.Register("room:1", conn)
 b.Broadcast("room:1", []byte("hello")) // 慢消费者超时跳过，不阻塞其他连接
 ```
+
+## unix socket 对端身份（peercred）
+
+「socket 文件权限就是边界」**实测不成立**（fnOS 真机 2026-10-28：socket 权限 755、
+others 只有 r-x，非属主的本地用户实际 connect 成功）⇒ 任何「能连上就算可信」的设计，
+任意本地用户都能冒充任意对端身份。
+
+```go
+trust := peercred.NewPeerTrust(0, 1000) // root 与 worker 用户
+uid, ok := peercred.PeerUID(conn)
+if !trust.Trusted(uid, ok) {
+    // 对端不可信 ⇒ 剥离其携带的身份断言并告警
+}
+```
+
+- **取不到凭据 ⇒ 不信任**：`PeerUID` 返回 ok=false、`PeerTrust.Trusted(uid, false)`
+  一律 false ⇒ 宁可显式失败，不可无来源采信身份；
+- **跨平台降级**：非 Linux 返回「未知对端」，**不静默放行**；
+- 挂到 http.Server：`srv := &http.Server{ConnContext: peercred.ConnContext(nil)}`
+  ⇒ 对端 uid 进请求 ctx（取不到时**不注入** ⇒ 读出来就是「未知」）；
+- 与「把 socket 权限收紧（0660 + 专属组）」是**互补**关系，不是替代。
 
 ## 边界
 
