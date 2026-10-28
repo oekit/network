@@ -9,6 +9,7 @@ package sshx
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -90,10 +91,46 @@ func headerKeyType(raw []byte) string {
 //
 // 它比「看第一个字段」严格：字段对但内容是坏 base64 的公钥，在这里会被
 // 拒掉，而在字符串前缀检查里它是「通过」的——然后在登录那一刻才失败。
+//
+// ⚠️ 但它**按行扫描**：解析不了的行被跳过，取第一条能解析的。所以输入里
+// 有多把钥匙时，它判的是「第一条能解析的」，不是「第一把」。要的是
+// 「恰好一把」就用 ParseSinglePublicKey。
 func ParsePublicKey(publicKey string) (ssh.PublicKey, error) {
 	pub, _, _, _, err := ssh.ParseAuthorizedKey([]byte(strings.TrimSpace(publicKey)))
 	if err != nil {
 		return nil, fmt.Errorf("parse public key: %w", err)
+	}
+	return pub, nil
+}
+
+// ParseSinglePublicKey 解析**恰好一把** SSH 公钥。
+//
+// 它拒掉 ParsePublicKey 容忍的两种输入：
+//
+//   - **多行**：ssh.ParseAuthorizedKey 是逐行扫描的，解析不了的行被跳过。
+//     于是「第一行 ed25519、第二行 rsa」会被判成 rsa——而调用方接下来通常
+//     是把**整个字符串**存下去，堡垒机存的是两把钥匙，且会安静地接受那把
+//     ed25519。**被检查的东西与被存下的东西不是同一个**，这类漏洞极难查。
+//   - **一行里塞了两把**：authorized_keys 是一行一把；rest 非空说明后面
+//     还有内容。
+//
+// 说清它为什么比 ParsePublicKey 严：ParsePublicKey 回答的是「这里面有
+// 一把能用的钥匙吗」，本函数回答的是「这里面**只有**一把能用的钥匙吗」。
+// 要把这段字符串原样存进某个系统时，后者才是该问的那个。
+func ParseSinglePublicKey(publicKey string) (ssh.PublicKey, error) {
+	trimmed := strings.TrimSpace(publicKey)
+	if trimmed == "" {
+		return nil, errors.New("the public key is empty")
+	}
+	if strings.ContainsAny(trimmed, "\n\r") {
+		return nil, errors.New("the input holds more than one key")
+	}
+	pub, _, _, rest, err := ssh.ParseAuthorizedKey([]byte(trimmed))
+	if err != nil {
+		return nil, fmt.Errorf("parse public key: %w", err)
+	}
+	if len(strings.TrimSpace(string(rest))) > 0 {
+		return nil, errors.New("the input holds more than one key")
 	}
 	return pub, nil
 }

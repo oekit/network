@@ -141,3 +141,51 @@ func TestPublicKeyType_BrokenKey(t *testing.T) {
 		t.Errorf("空输入的类型 = %q，期望空串", got)
 	}
 }
+
+// TestParseSinglePublicKey 断言「恰好一把」被守住。
+//
+// ParseAuthorizedKey 是逐行扫描的：解析不了的行被跳过，取第一条能解析的。
+// 于是「第一行 ed25519、第二行 rsa」会被判成 rsa——而调用方接下来通常是
+// 把整个字符串存下去。**被检查的东西与被存下的东西不是同一个**。
+func TestParseSinglePublicKey(t *testing.T) {
+	_, key, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	signer, err := ssh.NewSignerFromKey(key)
+	if err != nil {
+		t.Fatalf("signer: %v", err)
+	}
+	ed := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(signer.PublicKey())))
+
+	t.Run("一把钥匙", func(t *testing.T) {
+		if _, err := ParseSinglePublicKey(ed); err != nil {
+			t.Errorf("一把合法的钥匙应当通过：%v", err)
+		}
+	})
+
+	t.Run("多行：第一行是 ed25519", func(t *testing.T) {
+		// 这正是漏洞的形状：逐行扫描会跳过第一行（这里它能解析，所以更糟）。
+		_, err := ParseSinglePublicKey("garbage\n" + ed)
+		if err == nil {
+			t.Error("多行输入应当被拒")
+		}
+	})
+
+	t.Run("一行两把钥匙：第二把按语法算注释", func(t *testing.T) {
+		// authorized_keys 的语法是「[options] type base64 [comment]」⇒ 一行里
+		// 第二个 type/base64 形状的东西是**注释**，不是第二把钥匙（语法上
+		// 分不出来）。这与「多行」不同：多行时每一行都算数，所以那条被拒。
+		//
+		// ⚠️ 堡垒机怎么存这一行没有实测过——本函数只保证「语法上是一把钥匙」。
+		if _, err := ParseSinglePublicKey(ed + " " + ed); err != nil {
+			t.Errorf("一行两把不该被拒（第二把按语法就是注释）：%v", err)
+		}
+	})
+
+	t.Run("空", func(t *testing.T) {
+		if _, err := ParseSinglePublicKey("   "); err == nil {
+			t.Error("空输入应当被拒")
+		}
+	})
+}
