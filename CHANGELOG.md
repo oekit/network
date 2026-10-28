@@ -1,5 +1,15 @@
 # Changelog — oekit/network
 
+## [v0.6.1] — 2026-10-29
+
+- fix(sshx): 握手超时的判定改走 `errors.As` —— 原来那条分支**是死代码**
+
+`x/crypto/ssh` 的 `NewClientConn` **永远**把错误包一层（`fmt.Errorf("ssh: handshake failed: %w", err)`）⇒ 返回值的动态类型是 `*fmt.wrapError`，**不实现 `net.Error`** ⇒ 直接类型断言 `herr.(net.Error)` **恒假** ⇒ 「did not finish within」这句话**永远不会出现**，握手超时被说成了「handshake failed」。
+
+为什么这条措辞值得修：**调用方靠它区分「超时」与「认证被拒」**，两者应对方式不同（超时换一条路重试，被拒则是凭据问题）。上游 `sshx.Dial` 的措辞与它取代的那份本地实现逐字相同，所以**本仓没有行为变化**；但那份本地实现搬上来时带着同一条假断言——现在一次修对，两边都对。
+
+判据从类型断言换成走错误链：`var ne net.Error; if errors.As(herr, &ne) && ne.Timeout()`。测试里加了一条断言（超时必须有专属措辞）——修之前它会红。
+
 ## [v0.6.0] — 2026-10-29
 
 - feat(sshx): SSH 客户端原语 —— 拨号、私钥、密钥类型识别、保活

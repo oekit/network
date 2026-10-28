@@ -152,6 +152,14 @@ func TestDial_GivesUpOnAHandshakeThatNeverFinishes(t *testing.T) {
 	if !strings.Contains(err.Error(), "handshake") {
 		t.Errorf("the error does not say what went wrong: %v", err)
 	}
+	// The timeout has to be told apart from a refusal. x/crypto/ssh always
+	// wraps the handshake error, so finding the timeout means walking the
+	// error chain — a direct type assertion to net.Error never matches, and
+	// the timeout comes out dressed as a refusal ("unable to authenticate"
+	// is the string the caller watches for).
+	if !strings.Contains(err.Error(), "did not finish within") {
+		t.Errorf("the timeout was not told apart from a refusal: %v", err)
+	}
 }
 
 // TestDial_CompletesARealHandshake 断言界限不伤健康路径。
