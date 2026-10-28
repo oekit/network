@@ -222,3 +222,114 @@ func TestOutbox_ConcurrentSenders(t *testing.T) {
 	wg.Wait()
 	waitFor(t, "every frame written", func() bool { return len(c.snapshot()) == senders*each })
 }
+
+// TestOutbox_SendCopiesTheFrame 断言 Send 拷贝入参。
+//
+// 写协程是**稍后**才写帧的，而调用方很可能复用同一个 buffer。不拷贝的话，
+// 上线的是调用方改过之后的字节——症状是「客户端收到坏 JSON」，而服务端
+// 这边什么错都不报。
+func TestOutbox_SendCopiesTheFrame(t *testing.T) {
+	c := newCollector()
+	block := make(chan struct{})
+	taken := make(chan struct{})
+	o := NewOutbox(func(msg []byte) error {
+		select {
+		case <-taken:
+		default:
+			close(taken)
+		}
+		<-block
+		return c.write(msg)
+	}, OutboxOptions{QueueSize: 4})
+	defer o.Close()
+
+	buf := []byte("hello")
+	o.Send(buf)
+	waitFor(t, "the writer to take the frame", func() bool {
+		select {
+		case <-taken:
+			return true
+		default:
+			return false
+		}
+	})
+	// 调用方复用 buffer —— 上线的必须还是原字节。
+	copy(buf, "Xello")
+	close(block)
+	// 先 Close 再 Wait：写协程要等到 done 才会退出，否则 Wait 会一直等它。
+	o.Close()
+	o.Wait()
+
+	got := c.snapshot()
+	if len(got) != 1 {
+		t.Fatalf("wrote %d frames, want 1", len(got))
+	}
+	if string(got[0]) != "hello" {
+		t.Errorf("the frame on the wire = %q, want %q (Send must copy the frame)", got[0], "hello")
+	}
+}
+
+// TestOutbox_WriteFailureCountsLostFrames 断言写失败时队列里剩下的帧被记账。
+//
+// 那些帧会**无声消失**：Send 返回过 true（=「进了队列」），而调用方据此
+// 认为帧已交付。不记账的话，丢了多少帧只有天知道。
+func TestOutbox_WriteFailureCountsLostFrames(t *testing.T) {
+	c := newCollector()
+	c.failAt = 0 // 第一次写就失败
+	o := NewOutbox(c.write, OutboxOptions{QueueSize: 8})
+	defer o.Close()
+
+	for i := 0; i < 5; i++ {
+		if !o.Send([]byte("x")) {
+			t.Fatalf("frame %d was refused", i)
+		}
+	}
+	o.Wait()
+	if o.Dropped() == 0 {
+		t.Error("the frames left in the queue must be counted as lost")
+	}
+	if o.Written() != 0 {
+		t.Errorf("Written = %d, want 0 (the write failed)", o.Written())
+	}
+}
+
+// TestOutbox_DoneDoesNotMeanDrained 断言 Done() 不代表队列已冲刷。
+//
+// Done 只表示「已关闭，不再接受新帧」；写协程可能还在冲刷。关底层连接前
+// 必须等 Wait()——照「等 Done 就关连接」做会截断待发帧。
+func TestOutbox_DoneDoesNotMeanDrained(t *testing.T) {
+	block := make(chan struct{})
+	taken := make(chan struct{})
+	o := NewOutbox(func([]byte) error {
+		select {
+		case <-taken:
+		default:
+			close(taken)
+		}
+		<-block
+		return nil
+	}, OutboxOptions{QueueSize: 4})
+	defer func() { close(block); o.Close() }()
+
+	o.Send([]byte("1"))
+	waitFor(t, "the writer to take the frame", func() bool {
+		select {
+		case <-taken:
+			return true
+		default:
+			return false
+		}
+	})
+	o.Send([]byte("2"))
+
+	o.Close()
+	select {
+	case <-o.Done():
+	case <-time.After(3 * time.Second):
+		t.Fatal("Done did not fire")
+	}
+	// Done 已经响了，但写还卡着 ⇒ 帧还没冲刷出去。
+	if o.Written() != 0 {
+		t.Errorf("Written = %d while the write is still blocked, want 0", o.Written())
+	}
+}
