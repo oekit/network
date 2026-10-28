@@ -32,9 +32,9 @@ func TestPeerUID_UnixSocket(t *testing.T) {
 	}
 	got := make(chan result, 1)
 	go func() {
-		conn, err := ln.Accept()
-		if err != nil {
-			got <- result{err: err}
+		conn, acceptErr := ln.Accept()
+		if acceptErr != nil {
+			got <- result{err: acceptErr}
 			return
 		}
 		defer func() { _ = conn.Close() }()
@@ -56,10 +56,11 @@ func TestPeerUID_UnixSocket(t *testing.T) {
 		t.Fatal("unix socket 的对端凭据取不到（SO_PEERCRED 应可用）")
 	}
 
-	self, err := strconv.Atoi(os.Getenv("UID"))
-	if err != nil {
-		// 容器里可能没有 UID 环境变量 ⇒ 直接读 /proc/self/status 的 Uid。
-		self = procSelfUID(t)
+	self := procSelfUID(t)
+	if uidEnv := os.Getenv("UID"); uidEnv != "" {
+		if n, convErr := strconv.Atoi(uidEnv); convErr == nil {
+			self = n
+		}
 	}
 	if int(res.uid) != self {
 		t.Errorf("取到的对端 uid = %d，期望 %d（对端就是本进程）", res.uid, self)
@@ -87,8 +88,8 @@ func TestConnContext_UnixSocketInjectsUID(t *testing.T) {
 
 	ctxCh := make(chan context.Context, 1)
 	go func() {
-		conn, err := ln.Accept()
-		if err != nil {
+		conn, acceptErr := ln.Accept()
+		if acceptErr != nil {
 			return
 		}
 		defer func() { _ = conn.Close() }()
@@ -128,8 +129,8 @@ func procSelfUID(t *testing.T) int {
 			if len(fields) == 0 {
 				break
 			}
-			n, err := strconv.Atoi(fields[0])
-			if err != nil {
+			n, parseErr := strconv.Atoi(fields[0])
+			if parseErr != nil {
 				break
 			}
 			return n
