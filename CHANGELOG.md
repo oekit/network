@@ -1,5 +1,9 @@
 # Changelog — oekit/network
 
+## [v0.7.2] — 2026-10-29
+
+- build: 依赖地板对齐——concurrency 抬到 v0.23.2
+
 ## [v0.7.1] — 2026-10-29
 
 - fix(wsutil): `Outbox` 的契约补齐——`Done` 的说明、丢帧记账、`Send` 拷贝、`write` 的硬约束
