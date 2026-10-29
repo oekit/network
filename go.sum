@@ -22,8 +22,8 @@ github.com/oekit/concurrency v0.23.2 h1:1iMfoBe7ti6//IRJoyBlokhUKW0tSEvrQIvb3lEX
 github.com/oekit/concurrency v0.23.2/go.mod h1:eLMEfucIyKs1cLGK4+lKRQCf3Fgb6EE/mkpPXFMRuMA=
 github.com/oekit/logx v0.8.0 h1:S0KQOiI6h4GGktsv0fl1KtHBcOGZZgj6M6cUCLRk41E=
 github.com/oekit/logx v0.8.0/go.mod h1:mU3HRko52yW+XVuJD5ZtiND5zIbBAIZ23Yhu+Mqzy/Q=
-github.com/oekit/tracing v0.3.1 h1:TQYbAOzCQavTK3/jfmYmUady2+bZ007j2G92d5EZiZo=
-github.com/oekit/tracing v0.3.1/go.mod h1:spsS+W0b6DcPLYheRpATS5sRQ9hAzPKoCehuK6RPa0w=
+github.com/oekit/tracing v0.3.2 h1:DpSIQSeetmb4YTfIXUwGM/FEp0hJtmkNv+eLnT4YmzM=
+github.com/oekit/tracing v0.3.2/go.mod h1:LE/MAD/29dHa1/5u1A/Vmiqa+/4dvZJPu+mVJVJXTjg=
 golang.org/x/crypto v0.58.0 h1:COkYLr4k7nDI4r6QtMML2AfzeIswWHAJthLS6K/M/54=
 golang.org/x/crypto v0.58.0/go.mod h1:Xh+kl5A+M0gMiWDytH2Hhr5Z7WbNCpv/eB/EFgfSk+w=
 golang.org/x/sys v0.21.0/go.mod h1:/VUhepiaJMQUp4+oa/7Zr1D23ma6VTLIYjOOTFZPUcA=
