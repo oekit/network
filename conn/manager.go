@@ -121,7 +121,19 @@ func (m *Manager) loop() {
 		backoff    = time.Second
 	)
 
-	connc <- conn
+	// 初始连接**不**进 connc：connc 只承载「重连拨号的结果」。
+	//
+	// 此前这里有一行 `connc <- conn`，把初始连接又塞进了 connc——而 conn
+	// 变量里本来就有同一份。于是 connc 里留下一份**重复副本**，它与
+	// `m.putc` 同时就绪，select 挑中哪个是不确定的：
+	//
+	//	若先挑 putc：conn=nil、reconnectc=m.after(...)（重连已排定）；
+	//	下一轮若挑中 connc 那份**非 nil 的旧副本** ⇒ 走 else 分支 ⇒
+	//	reconnectc = nil ⇒ **刚排定的重连被抹掉**，连接断了却再也不重连。
+	//
+	// 复现见 TestManager_ReconnectNotLostByStaleConn（100 轮约 30 次丢失）。
+	// 修法：connc 的唯一写者是下面的重连 goroutine，语义单一才不会串味。
+	// 初始连接直接由 `m.takec <- conn` 分支交付给调用方。
 
 	for {
 		select {
