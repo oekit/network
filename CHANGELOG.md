@@ -1,5 +1,9 @@
 # Changelog — oekit/network
 
+## [v0.7.4] — 2026-11-02
+
+- build: 矩阵内依赖地板 `concurrency` v0.23.2 → v0.23.3（维护轮全量对齐；本版不含 API 变更）
+
 ## [v0.7.3] — 2026-10-30
 
 - build: 矩阵内依赖地板 `tracing` v0.3.1 → v0.3.2（维护轮全量对齐；本版不含 API 变更）
