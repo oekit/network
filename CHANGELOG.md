@@ -1,5 +1,9 @@
 # Changelog — oekit/network
 
+## [v0.7.5] — 2026-11-02
+
+- fix(wsutil): 时序敏感的 flaky 测试——写失败记账用例改为自控写协程时机（#54）
+
 ## [v0.7.4] — 2026-11-02
 
 - build: 矩阵内依赖地板 `concurrency` v0.23.2 → v0.23.3（维护轮全量对齐；本版不含 API 变更）
