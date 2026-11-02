@@ -273,10 +273,25 @@ func TestOutbox_SendCopiesTheFrame(t *testing.T) {
 //
 // 那些帧会**无声消失**：Send 返回过 true（=「进了队列」），而调用方据此
 // 认为帧已交付。不记账的话，丢了多少帧只有天知道。
+//
+// ⚠ 这里**必须自己控制写协程的时机**，不能跟它赛跑。
+// 写失败 ⇒ 写协程先 Close（不再接受新帧）再记账 ⇒ 若它抢在 5 帧入队之前
+// 跑到第一次写，后续 Send 就会在已关闭的管道上返回 false（报
+// 「frame N was refused」），且队列可能已被清空 ⇒ Dropped() 也是 0。
+// 这个假设没有任何东西保证 ⇒ CI 上负载高、写协程更容易插队 ⇒ 偶发红
+// （实测：6 个忙循环抢 CPU + GOMAXPROCS=16 + -count=20000 必红）。
+//
+// 所以第一次写先挡住：等 5 帧**全部入队**之后才放行失败。
 func TestOutbox_WriteFailureCountsLostFrames(t *testing.T) {
 	c := newCollector()
 	c.failAt = 0 // 第一次写就失败
-	o := NewOutbox(c.write, OutboxOptions{QueueSize: 8})
+
+	// gate 挡住第一次写，直到测试把 5 帧都塞进队列。
+	gate := make(chan struct{})
+	o := NewOutbox(func(msg []byte) error {
+		<-gate
+		return c.write(msg)
+	}, OutboxOptions{QueueSize: 8})
 	defer o.Close()
 
 	for i := 0; i < 5; i++ {
@@ -284,9 +299,12 @@ func TestOutbox_WriteFailureCountsLostFrames(t *testing.T) {
 			t.Fatalf("frame %d was refused", i)
 		}
 	}
+	close(gate) // 5 帧已入队 ⇒ 放行，让这次写失败
+
 	o.Wait()
-	if o.Dropped() == 0 {
-		t.Error("the frames left in the queue must be counted as lost")
+	// 5 帧发出：1 帧被写协程取走（写失败），剩下 4 帧随队列消失 ⇒ 记账 4。
+	if got := o.Dropped(); got != 4 {
+		t.Errorf("Dropped = %d, want 4 (the 4 frames left in the queue)", got)
 	}
 	if o.Written() != 0 {
 		t.Errorf("Written = %d, want 0 (the write failed)", o.Written())
