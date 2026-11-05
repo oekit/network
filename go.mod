@@ -7,7 +7,7 @@ require (
 	github.com/nats-io/nats.go v1.55.0
 	github.com/oekit/concurrency v0.25.1
 	github.com/oekit/logx v0.8.3
-	github.com/oekit/tracing v0.3.2
+	github.com/oekit/tracing v0.3.3
 	golang.org/x/crypto v0.58.0
 )
 
