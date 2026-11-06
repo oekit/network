@@ -112,3 +112,39 @@ func TestExponential(t *testing.T) {
 		t.Errorf("expected capped at 1 minute, got %v", d)
 	}
 }
+
+// TestManager_InitialDialFailure_Retries 钉住 #64：初始拨号失败后必须排定
+// 退避重连——依赖端短暂不可达（服务启动最常见场景）后恢复，Manager 必须自愈；
+// 修复前初始失败 ⇒ reconnectc 永不排定 ⇒ 拨号次数恒 1，永不重试。
+func TestManager_InitialDialFailure_Retries(t *testing.T) {
+	var attempts atomic.Int32
+	after := make(chan time.Time)
+	m := NewManager(func(network, address string) (net.Conn, error) {
+		if attempts.Add(1) <= 2 {
+			return nil, errors.New("connection refused")
+		}
+		return &mockConn{}, nil
+	}, "tcp", "127.0.0.1:1", func(time.Duration) <-chan time.Time { return after })
+
+	// 初始失败（attempts=1）⇒ 退避排定；触发重连①失败（attempts=2）⇒ 再排定；
+	// 触发重连②成功（attempts=3）⇒ Take 拿到连接
+	go func() {
+		for i := 0; i < 4; i++ {
+			after <- time.Now()
+		}
+	}()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if c := m.Take(); c != nil {
+			c.Close()
+			if got := attempts.Load(); got < 3 {
+				t.Fatalf("成功前拨号次数应 ≥3, got %d", got)
+			}
+			m.Stop()
+			return
+		}
+	}
+	m.Stop()
+	t.Fatalf("初始失败后从未重连成功（attempts=%d）——#64 回归", attempts.Load())
+}
