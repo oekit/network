@@ -1,5 +1,12 @@
 # Changelog — oekit/network
 
+## [v0.7.8] — 2026-11-06
+
+- fix(conn): 初始拨号失败排定退避重连（[#64](https://github.com/oekit/network/issues/64)）——reconnectc 此前只在「重连失败」与「putc 错误且 conn 非 nil」两处被赋值，初始拨号失败时两条路径均不可达 ⇒ loop 再无任何拨号被排定 ⇒ 服务启动时依赖端短暂不可达（最常见场景），之后即使对端恢复 Manager 也永不重试，Take 恒 nil；而「已建连后断开」路径有完整指数退避重连——明显不对称。修法：初始失败同样排定退避重连（与断连路径对称）。回归：注入「前 2 次失败、第 3 次成功」的 dialer + 手动 after 通道，拨号次数必须 ≥3
+- fix(streamx): Hub 多源调度改轮询 + 源错误留痕（[#65](https://github.com/oekit/network/issues/65)、[#67](https://github.com/oekit/network/issues/67)）——此前 `for _, src := range sources { for { ... } }` 是逐源耗尽式：长活源挂在前时其余源**一条都不会被转发**（issue 实测源 1 产出 782 万条、源 2 转发 0 条）；且非耗尽的源错误与耗尽同走同一个 break，**无任何日志**（sink 侧反而有 Warn）——类型文档承诺的「任一失败仅记录」在源侧是空头支票。修法：活跃源下标表 round-robin（每源每轮取一条，耗尽/出错源退出轮询集，其余源继续）；非耗尽错误补 Warn（与 sink 侧同面）
+
+关联问题单：network#64、network#65、network#67。
+
 ## [v0.7.7] — 2026-11-06
 
 - build: 矩阵依赖地板对齐（维护轮 #233）

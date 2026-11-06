@@ -69,21 +69,37 @@ func (h *Hub) Run(ctx context.Context) error {
 	copy(sinks, h.sinks)
 	h.mu.RUnlock()
 
-	for _, src := range sources {
-		for {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			default:
-			}
-			ev, err := src.Next(ctx)
+	// 轮询调度（#65）：每源每轮取一条，index 步进——修复逐源耗尽式的饿死
+	// （长活源挂在前 ⇒ 其余源一条都不转发；README 定位聊天/通知场景，源天然
+	// 长活）。耗尽/出错的源退出轮询集，其余源继续。
+	//
+	// 源错误留痕（#67）：非耗尽错误补 Warn（类型文档承诺「任一失败仅记录」，
+	// sink 侧 2026-09-06 已补，源侧漏了）——「坏源被跳过」必须日志可见。
+	active := make([]int, len(sources)) // sources 下标表
+	for i := range active {
+		active[i] = i
+	}
+	exhausted := make([]bool, len(sources))
+	for len(active) > 0 {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		still := active[:0]
+		for _, si := range active {
+			ev, err := sources[si].Next(ctx)
 			if err != nil {
 				if errors.Is(err, ErrStreamExhausted) || errors.Is(err, ErrSinkClosed) {
-					break // 当前源耗尽,跳下一个源
+					exhausted[si] = true
+					continue // 源耗尽，退出轮询集
 				}
-				// 其他错误也跳过当前源(避免坏源拖死整个 hub)
-				break
+				hubLog.Warn("streamx source failed, skipping source",
+					"err", err, "source_index", si) // #67：坏源跳过必须留痕
+				exhausted[si] = true
+				continue
 			}
+			still = append(still, si)
 			for _, snk := range sinks {
 				if err := snk.Emit(ctx, ev); err != nil {
 					// 单 sink 失败继续(对应官方 MultiSink 的扇出语义),
@@ -93,7 +109,9 @@ func (h *Hub) Run(ctx context.Context) error {
 						"err", err, "event_type", ev.Type)
 				}
 			}
+			_ = exhausted // exhausted 仅作语义标注；轮询集以 still 为准
 		}
+		active = still[:len(still):len(still)]
 	}
 	return nil
 }

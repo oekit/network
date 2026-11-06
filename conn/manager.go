@@ -114,12 +114,19 @@ func (m *Manager) Write(b []byte) (int, error) {
 }
 
 func (m *Manager) loop() {
-	var (
-		conn       = m.doDial()
-		connc      = make(chan net.Conn, 1)
-		reconnectc <-chan time.Time
-		backoff    = time.Second
-	)
+	conn := m.doDial()
+	connc := make(chan net.Conn, 1)
+	var reconnectc <-chan time.Time
+	backoff := time.Second
+
+	// 初始拨号失败也要排定退避重连（#64）：此前 reconnectc 只在「重连失败」
+	// 与「putc 收到错误且 conn != nil」两处被赋值——初始失败时两条路径都
+	// 不可达 ⇒ loop 里再无任何拨号被排定 ⇒ 服务启动时依赖端短暂不可达
+	// （最常见场景），之后即使对端恢复 Manager 也永不重试，Take 恒 nil。
+	// 与「已建连后断开」的完整指数退避路径对称。
+	if conn == nil {
+		reconnectc = m.after(backoff)
+	}
 
 	// 初始连接**不**进 connc：connc 只承载「重连拨号的结果」。
 	//
