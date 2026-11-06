@@ -126,7 +126,7 @@ func TestManager_InitialDialFailure_Retries(t *testing.T) {
 		return &mockConn{}, nil
 	}, "tcp", "127.0.0.1:1", func(time.Duration) <-chan time.Time { return after })
 
-		// 初始失败（attempts=1）⇒ 退避排定；触发重连①失败（attempts=2）⇒ 再排定；
+	// 初始失败（attempts=1）⇒ 退避排定；触发重连①失败（attempts=2）⇒ 再排定；
 	// 触发重连②成功（attempts=3）⇒ Take 拿到连接
 	go func() {
 		for i := 0; i < 4; i++ {
