@@ -2,6 +2,7 @@ package conn
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"sync/atomic"
 	"testing"
@@ -108,6 +109,27 @@ func TestNewDefaultManager_TCP(t *testing.T) {
 	c := m.Take()
 	if c == nil {
 		t.Fatal("expected conn from NewDefaultManager")
+	}
+}
+
+// TestNewDefaultManager_DialHasTimeout 回归（#77）：NewDefaultManager 的
+// 拨号必须带 DefaultDialTimeout——裸 net.Dial 对黑 hole 对端（SYN 有去无回）
+// 会挂在 OS 级超时上（macOS 75s），自动重连组件对这类对端的退化形态是
+// 每次重连假死 75s+。
+//
+// 断言装配事实：拨号函数以包级 defaultDial（带超时的 net.Dialer）接入，
+// 函数值同一性即「带超时的那个拨号器」被接上，回归成裸 net.Dial 立即可见。
+// （超时行为本身是 net.Dialer 的语义，由标准库保证；黑 hole 对端无法在
+// 单测里确定性构造，不做真等 10s 的行为测试。）
+func TestNewDefaultManager_DialHasTimeout(t *testing.T) {
+	if DefaultDialTimeout <= 0 {
+		t.Fatalf("DefaultDialTimeout = %v, want > 0", DefaultDialTimeout)
+	}
+	// 立即 refused 的本地端口：只为取到 Manager 检查装配，不等待重连
+	m := NewDefaultManager("tcp", "127.0.0.1:1")
+	defer m.Stop()
+	if fmt.Sprintf("%p", m.dialer) != fmt.Sprintf("%p", defaultDial) {
+		t.Fatal("NewDefaultManager must dial via defaultDial (DefaultDialTimeout), not bare net.Dial (#77)")
 	}
 }
 

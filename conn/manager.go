@@ -57,11 +57,24 @@ func NewManager(d Dialer, network, address string, after AfterFunc) *Manager {
 	return m
 }
 
+// DefaultDialTimeout 是 NewDefaultManager 拨号超时（#77）。
+//
+// 裸 net.Dial 没有超时：对黑 hole 对端（SYN 有去无回的端口），每次拨号
+// 会挂在操作系统自己的超时上——macOS 上是 75 秒（同仓 sshx/dial.go 对
+// connectTimeout 的论证原文）。作为「自动重连」组件，退化形态是每次重连
+// 假死 75s+：连接数虽少，可用性长时间为零。10s 与 sshx.DefaultConnectTimeout
+// 同量级：远大于正常建连 RT，又把最坏情况压回一个重连周期内。
+const DefaultDialTimeout = 10 * time.Second
+
+// defaultDial 是 NewDefaultManager 的拨号函数（带 DefaultDialTimeout 的
+// net.Dialer）。包级变量使「带超时的拨号器被接上」成为可断言的装配事实。
+var defaultDial = (&net.Dialer{Timeout: DefaultDialTimeout}).Dial
+
 // NewDefaultManager 创建一个使用默认配置的连接管理器。
-// 使用 net.Dial 和 time.After。
+// 拨号带 DefaultDialTimeout 超时（#77），重连退避用 time.After。
 func NewDefaultManager(network, address string) *Manager {
 	return NewManager(
-		net.Dial,
+		defaultDial,
 		network,
 		address,
 		time.After,
