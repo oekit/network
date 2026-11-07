@@ -101,6 +101,120 @@ func TestSliceSource_ContextCancel(t *testing.T) {
 	}
 }
 
+// blockingSource 模拟长驻流（SSE 聊天/事件流）：Next 阻塞等下一条事件，
+// 直到事件被推入或 ctx 取消——正是 #82/#85 里「排在前面就饿死后续源」的
+// 那种源。
+type blockingSource struct {
+	events chan Event
+}
+
+func newBlockingSource() *blockingSource {
+	return &blockingSource{events: make(chan Event)}
+}
+
+func (b *blockingSource) Next(ctx context.Context) (Event, error) {
+	select {
+	case ev := <-b.events:
+		return ev, nil
+	case <-ctx.Done():
+		return Event{}, ctx.Err()
+	}
+}
+func (b *blockingSource) Close() error { return nil }
+
+// chanSink 把每个收到的事件送入 channel，测试侧用同步收代替轮询断言。
+type chanSink struct {
+	events chan Event
+}
+
+func (s *chanSink) Emit(_ context.Context, ev Event) error {
+	s.events <- ev
+	return nil
+}
+func (s *chanSink) Close() error { return nil }
+
+// TestHub_LongLivedSourceDoesNotStarveOthers 回归（#82 #85）：长驻源挂第 0 位、
+// Next 阻塞等事件时，后续源的事件必须照常扇出。顺序读（以及只解决「Next
+// 返回快」交错的 #65 轮询）在源 0 的 Next 上阻塞 ⇒ 源 1 一条都转发不出——
+// 多源退化成单源。修复后每源一个拉取 goroutine，源 1 无需等源 0。
+func TestHub_LongLivedSourceDoesNotStarveOthers(t *testing.T) {
+	live := newBlockingSource() // 挂第 0 位，一直不出事件
+	finite := &fakeSource{events: []Event{{Type: "msg", Data: "a"}, {Type: "msg", Data: "b"}}}
+	sink := &chanSink{events: make(chan Event, 2)}
+	h := NewHub()
+	h.AttachSource(live)
+	h.AttachSource(finite)
+	h.AttachSink(sink)
+	defer h.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	runErr := make(chan error, 1)
+	go func() { runErr <- h.Run(ctx) }()
+
+	// 核心断言：源 0 阻塞在 Next 上，源 1 的两条事件必须已全部到达 sink。
+	for i, want := range []string{"a", "b"} {
+		select {
+		case ev := <-sink.events:
+			if ev.Data != want {
+				t.Fatalf("event %d = %v, want %q", i, ev.Data, want)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("源 0 阻塞饿死了源 1：第 %d 条事件未到达——#82/#85 回归", i+1)
+		}
+	}
+
+	// 取消 ctx：阻塞的源 0 以 ctx 错误退出，Run 返回 ctx.Err()。
+	cancel()
+	select {
+	case err := <-runErr:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("Run after cancel = %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return after ctx cancel")
+	}
+}
+
+// TestHub_ConcurrentSourcesFanout 验证并发拉取下多个长驻源的事件
+// 都能到达 sink（每源至少一条），不存在「谁排前面谁独占」。
+func TestHub_ConcurrentSourcesFanout(t *testing.T) {
+	a := newBlockingSource()
+	b := newBlockingSource()
+	sink := &chanSink{events: make(chan Event, 4)}
+	h := NewHub()
+	h.AttachSource(a)
+	h.AttachSource(b)
+	h.AttachSink(sink)
+	defer h.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runErr := make(chan error, 1)
+	go func() { runErr <- h.Run(ctx) }()
+
+	a.events <- Event{Type: "a", Data: 1}
+	b.events <- Event{Type: "b", Data: 2}
+
+	got := make(map[string]bool)
+	for i := 0; i < 2; i++ {
+		select {
+		case ev := <-sink.events:
+			got[ev.Type] = true
+		case <-time.After(2 * time.Second):
+			t.Fatalf("只收到 %v，两个长驻源的事件应都能扇出", got)
+		}
+	}
+	if !got["a"] || !got["b"] {
+		t.Errorf("expected events from both sources, got %v", got)
+	}
+	cancel()
+	select {
+	case <-runErr:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return after ctx cancel")
+	}
+}
+
 // TestHub_Fanout 验证 Hub 1 source → 2 sinks 扇出。
 func TestHub_Fanout(t *testing.T) {
 	src := &fakeSource{events: []Event{
