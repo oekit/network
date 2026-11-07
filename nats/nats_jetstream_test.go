@@ -238,7 +238,10 @@ func TestJetStream_Publish_NilContext(t *testing.T) {
 		t.Fatalf("CreateStream: %v", createErr)
 	}
 
-	ack, err := js.Publish(nil, "nilctx.js.one", []byte("hello"))
+	// 类型化的 nil（而非字面 nil）：staticcheck SA1012 拦字面 nil 传参，
+	// 而 nil 值的 context.Context 变量在运行时就是 nil 接口——回归语义不变。
+	var nilCtx context.Context
+	ack, err := js.Publish(nilCtx, "nilctx.js.one", []byte("hello"))
 	if err != nil {
 		t.Fatalf("Publish(nil ctx): %v", err)
 	}
@@ -246,7 +249,7 @@ func TestJetStream_Publish_NilContext(t *testing.T) {
 		t.Errorf("expected PubAck on stream %s, got %+v", streamName, ack)
 	}
 
-	ack2, err := js.PublishJSON(nil, "nilctx.js.two", map[string]int{"n": 1})
+	ack2, err := js.PublishJSON(nilCtx, "nilctx.js.two", map[string]int{"n": 1})
 	if err != nil {
 		t.Fatalf("PublishJSON(nil ctx): %v", err)
 	}

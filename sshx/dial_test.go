@@ -281,7 +281,10 @@ func TestDial_NilConfig(t *testing.T) {
 // 拨号错误（而非 panic），Background（无截止、永不取消）即「调用方没有
 // 额外约束」。
 func TestDial_NilContext(t *testing.T) {
-	client, err := Dial(nil, "127.0.0.1:1", clientConfig(), DialOptions{})
+	// 类型化的 nil（而非字面 nil）：staticcheck SA1012 拦字面 nil 传参，
+	// 而 nil 值的 context.Context 变量在运行时就是 nil 接口——回归语义不变。
+	var nilCtx context.Context
+	client, err := Dial(nilCtx, "127.0.0.1:1", clientConfig(), DialOptions{})
 	if err == nil {
 		if client != nil {
 			_ = client.Close()
