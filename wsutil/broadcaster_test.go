@@ -3,6 +3,7 @@ package wsutil
 import (
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -341,4 +342,99 @@ func (c *blockingConn) WriteMessage(_ int, _ []byte) error {
 func (c *blockingConn) Close() error { return nil }
 func (c *blockingConn) SetWriteDeadline(_ time.Time) error {
 	return nil // no-op 违约实现
+}
+
+// stuckWriteConn 模拟 SetWriteDeadline no-op + 写阻塞到放行的违约 Conn，
+// 并记录在途写并发数——#87 要防的正是同一 Conn 上并发写（帧交错损坏）。
+type stuckWriteConn struct {
+	mockConn
+	entered  chan struct{}
+	release  chan struct{}
+	writes   atomic.Int32
+	inFlight atomic.Int32
+	maxSeen  atomic.Int32
+}
+
+func newStuckWriteConn() *stuckWriteConn {
+	return &stuckWriteConn{
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+}
+
+func (c *stuckWriteConn) WriteMessage(messageType int, data []byte) error {
+	cur := c.inFlight.Add(1)
+	for {
+		m := c.maxSeen.Load()
+		if cur <= m || c.maxSeen.CompareAndSwap(m, cur) {
+			break
+		}
+	}
+	if c.writes.Add(1) == 1 {
+		close(c.entered) // 第一笔写已进入（测试侧的同步点）
+	}
+	<-c.release
+	c.inFlight.Add(-1)
+	return nil
+}
+
+// TestBroadcaster_NoConcurrentWritesToSameConn 回归（#87）：单轮广播等待
+// 超时（waitTimeout）放弃后，仍在途的写 goroutine 会与下一轮对同一 Conn 的
+// 新写并发进行——websocket 语义下即帧交错损坏。修复后每 Conn 一把串行写锁：
+// 上一轮的写未返回时，下一轮 TryLock 失败、跳过该连接本轮的写（连接保留在
+// 房间里；写恢复后下一轮照常投递）。
+func TestBroadcaster_NoConcurrentWritesToSameConn(t *testing.T) {
+	b := NewBroadcaster()
+	defer b.Close()
+	b.waitTimeout = 100 * time.Millisecond
+
+	stuck := newStuckWriteConn()
+	fast := &mockConn{}
+	b.Register("room", stuck)
+	b.Register("room", fast)
+	waitFor(t, "both conns registered", func() bool { return b.GetRoomCount("room") == 2 })
+
+	// 第一轮：stuck 的写进入并卡住（持有串行写锁），fast 正常写完；
+	// 等待兜底 100ms 后本轮放弃。
+	b.Broadcast("room", []byte("m1"))
+	<-stuck.entered
+
+	// 第二轮：stuck 上一轮的写仍在途——必须跳过，而不是启动第二笔
+	// WriteMessage。fast 收到 m2 证明第二轮已完整执行。
+	b.Broadcast("room", []byte("m2"))
+	waitFor(t, "fast conn receives both messages", func() bool { return fast.writtenCount() == 2 })
+
+	// 修复前（无串行化）：第二轮会对 stuck 启动第二笔 WriteMessage，与
+	// 卡住的第一笔并发。给一个有界观察窗断言「绝不发生」。
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if got := stuck.writes.Load(); got != 1 {
+			t.Fatalf("second concurrent WriteMessage started on stuck conn (writes=%d, maxInFlight=%d) — #87 回归",
+				got, stuck.maxSeen.Load())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := stuck.maxSeen.Load(); got != 1 {
+		t.Fatalf("max concurrent in-flight writes = %d, want 1", got)
+	}
+	// 跳过≠踢出：stuck 仍留在房间里（写恢复后下一轮照常投递）。
+	if got := b.GetRoomCount("room"); got != 2 {
+		t.Fatalf("room count = %d, want 2 (skipped conn must stay registered)", got)
+	}
+
+	// 放行第一笔写：等串行写锁确实释放（同包直接探测），第三轮广播
+	// 恢复对 stuck 的投递——跳过是暂时的，不是永久驱逐。
+	close(stuck.release)
+	lock := b.connWriteLock(stuck)
+	waitFor(t, "stuck write lock released", func() bool { return lock.TryLock() })
+	lock.Unlock()
+
+	b.Broadcast("room", []byte("m3"))
+	waitFor(t, "fast conn receives m3", func() bool { return fast.writtenCount() == 3 })
+	waitFor(t, "stuck conn receives m3 after unblocked", func() bool {
+		return stuck.writes.Load() == 2
+	})
+	if got := stuck.maxSeen.Load(); got != 1 {
+		t.Fatalf("max concurrent in-flight writes = %d, want 1 (serialization must hold)", got)
+	}
 }

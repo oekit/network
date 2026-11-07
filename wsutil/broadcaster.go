@@ -18,8 +18,9 @@ var wsLog = logx.Delegating("wsutil")
 type Conn interface {
 	WriteMessage(messageType int, data []byte) error
 	Close() error
-	// SetWriteDeadline 设置写超时（可选实现）。
-	// 如果 Conn 不实现此方法，Broadcaster 会跳过写超时设置。
+	// SetWriteDeadline 设置写超时。它是**必选**方法，且必须真正生效——
+	// no-op 实现属违约：WriteMessage 可能永久阻塞，Broadcaster 对该连接
+	// 只能跳过后续写（见 handleBroadcast 的 #87 说明）。
 	SetWriteDeadline(t time.Time) error
 }
 
@@ -69,6 +70,11 @@ type Broadcaster struct {
 	// waitTimeout 是单轮广播等待所有写完成的上界, NewBroadcaster 设默认值,
 	// 测试(同包)可调短
 	waitTimeout time.Duration
+	// writeMu 按 Conn 记录串行写锁（#87）：保证同一连接上任意时刻至多一个
+	// 在途 WriteMessage——websocket 连接并发写会导致帧交错损坏。条目不随
+	// Unregister 删除：在途写可以活得比房间成员身份久，若重注册时换新锁，
+	// 卡死的旧写会与新写放成并发（正是要防的帧损坏）。
+	writeMu sync.Map // map[Conn]*sync.Mutex
 }
 
 // NewBroadcaster 创建并启动广播器。
@@ -169,8 +175,21 @@ func (b *Broadcaster) handleBroadcast(msg *broadcastMessage) {
 		// go func"的项目约定(2026-09-06 复审)
 		async.GoSafe(func() {
 			defer wg.Done()
-			// 设置写超时，防止慢消费者阻塞(Conn 契约要求实现;若实现为
-			// no-op,下方有等待兜底超时,不会拖死广播器)
+			// 同 conn 写串行化（#87）：上一轮等待超时后仍在途的写与下一轮的
+			// 新写并发进行 = websocket 帧交错损坏。TryLock 失败说明该连接上一
+			// 轮的写仍未返回——只有 SetWriteDeadline 为 no-op 的违约实现才可能
+			// 撑过整轮 waitTimeout(> writeTimeout)。跳过本轮写并留痕（连接保留
+			// 在房间里：写恢复后下一轮照常投递；若物理连接已被对端/业务关闭，
+			// 卡死的写会以错误返回并触发下方的注销清理）。
+			mu := b.connWriteLock(conn)
+			if !mu.TryLock() {
+				wsLog.Warn("broadcast write skipped: previous write still in flight",
+					"room", msg.room)
+				return
+			}
+			defer mu.Unlock()
+			// 设置写超时，防止慢消费者阻塞(Conn 契约要求实现且必须生效;
+			// 若实现为 no-op,上方 TryLock 串行化兜底,不会并发写坏帧)
 			_ = conn.SetWriteDeadline(time.Now().Add(writeTimeout))
 			if err := conn.WriteMessage(TextMessage, msg.message); err != nil {
 				b.handleUnregister(&registration{room: msg.room, conn: conn})
@@ -181,10 +200,11 @@ func (b *Broadcaster) handleBroadcast(msg *broadcastMessage) {
 	// 等待兜底(2026-09-06 复审修复):原实现 wg.Wait() 无上界 — 任一连接
 	// 写慢(最长 writeTimeout)期间 run() 循环被占住,Register/Unregister/
 	// Broadcast 三个无缓冲 channel 全部阻塞;若 Conn 的 SetWriteDeadline
-	// 是 no-op(接口允许),WriteMessage 永久阻塞 → 广播器整体死锁。
-	// 现在最多等 writeTimeout+1s,超时放弃等待继续服务(慢连接的在途写
-	// goroutine 由连接层错误自行收敛;SetWriteDeadline no-op 的实现会
-	// 滞留一个 goroutine,属 Conn 实现方违约,见接口注释)。
+	// 是 no-op,WriteMessage 永久阻塞 → 广播器整体死锁。
+	// 现在最多等 waitTimeout,超时放弃等待继续服务(慢连接的在途写由连接层
+	// 错误自行收敛;SetWriteDeadline no-op 的实现会滞留一个 goroutine,属
+	// Conn 实现方违约,见接口注释)。#87 串行化保证：超时放弃后，下一轮对
+	// 仍在途写的连接不会再启动新写（TryLock 跳过），不会并发写同一 Conn。
 	done := make(chan struct{})
 	// async.GoSafe:满足"禁止裸 go func"的项目约定(2026-09-15 治理轮)
 	async.GoSafe(func() {
@@ -197,6 +217,15 @@ func (b *Broadcaster) handleBroadcast(msg *broadcastMessage) {
 		wsLog.Warn("broadcast wait timeout; slow consumers dropped for this round",
 			"room", msg.room, "conns", len(connections), "timeout", b.waitTimeout)
 	}
+}
+
+// connWriteLock 返回（或首次创建）conn 的串行写锁（#87）。
+func (b *Broadcaster) connWriteLock(conn Conn) *sync.Mutex {
+	v, ok := b.writeMu.Load(conn)
+	if !ok {
+		v, _ = b.writeMu.LoadOrStore(conn, &sync.Mutex{})
+	}
+	return v.(*sync.Mutex)
 }
 
 // Register 将连接加入指定房间。
