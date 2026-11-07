@@ -3,6 +3,7 @@ package nats
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -19,6 +20,10 @@ type Client struct {
 	conn      *nats.Conn
 	opts      options
 	closeOnce sync.Once
+	// closedc 在连接进入 CLOSED 时关闭（由 ClosedHandler 触发）。nats.go 的
+	// Drain() 是异步的——立即返回，排空在内部 goroutine 里进行、完成后才
+	// 关闭连接；Close(ctx) 靠它等「真正排空完成」，而不是 Drain() 的返回。
+	closedc chan struct{}
 }
 
 // NatsOption 配置 Client 的可选参数。
@@ -75,6 +80,13 @@ func NewClient(urls string, opts ...NatsOption) (*Client, error) {
 		opt(&o)
 	}
 
+	// 先构造 Client 骨架：ClosedHandler 要引用 closedc（Close 等待排空
+	// 完成的信号），而 handler 必须在 nats.Connect 之前装配好。
+	c := &Client{
+		opts:    o,
+		closedc: make(chan struct{}),
+	}
+
 	natsOpts := []nats.Option{
 		nats.ReconnectWait(o.reconnectWait),
 		nats.MaxReconnects(o.maxReconnects),
@@ -92,6 +104,7 @@ func NewClient(urls string, opts ...NatsOption) (*Client, error) {
 		}),
 		nats.ClosedHandler(func(conn *nats.Conn) {
 			log.Info("connection closed")
+			close(c.closedc)
 			if o.onClose != nil {
 				o.onClose(conn)
 			}
@@ -106,9 +119,10 @@ func NewClient(urls string, opts ...NatsOption) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("nats connect: %w", err)
 	}
+	c.conn = conn
 
 	log.Info("connected", "url", conn.ConnectedUrl())
-	return &Client{conn: conn, opts: o}, nil
+	return c, nil
 }
 
 // Conn 返回底层 nats.Conn（用于高级用法）。
@@ -131,17 +145,46 @@ func (c *Client) Drain() error {
 	return c.conn.Drain()
 }
 
-// Close 关闭连接（先排空订阅，再关闭）。
-// 如果需要立即关闭（不等待消息处理完成），直接调用 c.conn.Close()。
-// 多次调用是安全的（sync.Once 保证只执行一次）。
-func (c *Client) Close() {
+// Close 关闭连接：发起 Drain 并等待「真正排空完成、连接进入 CLOSED」——
+// nats.go 的 Drain() 是异步的（立即返回，排空在内部 goroutine 里等所有订阅
+// 的在途消息处理完），一个 handler 阻塞时排空会挂到库的 DrainTimeout（默认
+// 30s）甚至更久（#83/#86），关停随之无界。现在 ctx 到期仍未排空就放弃等待、
+// 回退 conn.Close() 强制关闭（连接关闭会让阻塞中的读/写尽快以错误收敛），
+// 关停有界。Drain 被拒绝启动（如连接已被网络侧关闭）视为已达目标态。
+//
+// 签名遵循矩阵硬规则「组件 Close 统一 Close(ctx) error + sync.Once 幂等」：
+// 仅首次调用执行关闭动作并返回其结果，后续调用直接返回 nil。
+// nil ctx 按 context.Background() 处理（#79 口径）。
+//
+// ⚠️ BREAKING（0.x 允许）：原无参 Close() 移除——Go 不支持同名方法重载，
+// 无法按 issue #83 的设想保留无参兼容别名；调用点改为
+// c.Close(context.Background())。需要不等待排空的立即关闭，用 c.Conn().Close()。
+func (c *Client) Close(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	var closeErr error
 	c.closeOnce.Do(func() {
-		// Drain 会等待所有消息处理完成后自动关闭连接。
-		// 如果 Drain 失败（如连接已断开），则直接关闭。
 		if err := c.conn.Drain(); err != nil {
+			// Drain 拒绝启动（连接已关/正在重连）：回退强制关闭，确保连接
+			// 被释放。网络侧已关闭（ErrConnectionClosed）时目标态已达成，
+			// 不算错误。
 			c.conn.Close()
+			if !errors.Is(err, nats.ErrConnectionClosed) {
+				closeErr = fmt.Errorf("nats: drain: %w", err)
+			}
+			return
+		}
+		select {
+		case <-c.closedc:
+			// 排空完成（或连接已被网络侧关闭）：连接已进入 CLOSED
+		case <-ctx.Done():
+			// 排空超时：不再等在途 handler，强制关闭兜底，关停有界
+			c.conn.Close()
+			closeErr = fmt.Errorf("nats: close: drain timeout, forced close: %w", ctx.Err())
 		}
 	})
+	return closeErr
 }
 
 // Publish 发布消息到指定主题。
@@ -296,7 +339,12 @@ func (c *Client) Request(ctx context.Context, subject string, data []byte, timeo
 
 // RequestJSON 发送 JSON 请求并反序列化响应。
 // 使用 context 控制超时和取消。
-func RequestJSON[Req, Resp any](c *Client, ctx context.Context, subject string, req *Req, timeout time.Duration) (*Resp, error) {
+//
+// ⚠️ BREAKING（#88，0.x 阶段允许）：ctx 由第二位移至首位，与 Request 及
+// Go「ctx 首参」惯例对齐——旧形态 RequestJSON[Req, Resp](c, ctx, ...) 与
+// 同文件 Request(ctx, ...) 形态不一致，IDE 补全/人工誊写极易把 subject
+// 传进 ctx 位。亦与 mq.Requester.RequestJSON 的接口形态一致。
+func RequestJSON[Req, Resp any](ctx context.Context, c *Client, subject string, req *Req, timeout time.Duration) (*Resp, error) {
 	data, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("nats: marshal request: %w", err)

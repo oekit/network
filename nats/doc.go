@@ -17,7 +17,7 @@
 //	    nats.WithName("my-service"),
 //	    nats.WithReconnectWait(2*time.Second),
 //	)
-//	defer client.Close()
+//	defer client.Close(context.Background()) // 0.x BREAKING（#83/#86）：原无参 Close() 移除
 //
 //	// 发布
 //	err := client.Publish(ctx, "order.created", []byte(`{"id":1}`))

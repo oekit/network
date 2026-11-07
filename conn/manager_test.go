@@ -148,3 +148,52 @@ func TestManager_InitialDialFailure_Retries(t *testing.T) {
 	m.Stop()
 	t.Fatalf("初始失败后从未重连成功（attempts=%d）——#64 回归", attempts.Load())
 }
+
+// TestManager_PutWhileDisconnectedDoesNotBlockRecovery 钉住 #81/#84 指名的
+// 路径：初始拨号失败后 conn==nil，调用方 Put(err) 因 `err != nil && conn != nil`
+// 走不进重连分支——#64 修复前 reconnectc 从未排定，这一路径直接导致 Manager
+// 永久瘫痪（Take 恒 nil，服务端恢复也不自愈）。#64 之后重连在初始失败时即已
+// 排定；本测试钉住「失联期间的 Put(err) 必须是无害 no-op——不吞掉、不推迟
+// 已排定的重连」，服务端恢复后 Take 必须能拿到连接。
+func TestManager_PutWhileDisconnectedDoesNotBlockRecovery(t *testing.T) {
+	var attempts atomic.Int32
+	after := make(chan time.Time)
+	m := NewManager(func(network, address string) (net.Conn, error) {
+		if attempts.Add(1) <= 2 {
+			return nil, errors.New("connection refused")
+		}
+		return &mockConn{}, nil
+	}, "tcp", "127.0.0.1:1", func(time.Duration) <-chan time.Time { return after })
+
+	// feeder 无限供给退避触发（而非固定次数）：若重连恰好落在「Take 返回
+	// nil 之后、Put(err) 送达之前」，Put 会按契约关闭这条新连接并再触发
+	// 一次重连——固定次数的 feeder 会被烧光，测试就假死了。
+	feederDone := make(chan struct{})
+	defer close(feederDone)
+	go func() {
+		for {
+			select {
+			case after <- time.Now():
+			case <-feederDone:
+				return
+			}
+		}
+	}()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if c := m.Take(); c != nil {
+			c.Close()
+			if got := attempts.Load(); got < 3 {
+				t.Fatalf("成功前拨号次数应 ≥3, got %d", got)
+			}
+			m.Stop()
+			return
+		}
+		// #81/#84 指名路径：conn==nil 时调用方报告错误。conn 为 nil ⇒
+		// 走不进重连分支，但也绝不能干扰初始失败时已排定的退避重连。
+		m.Put(errors.New("still down"))
+	}
+	m.Stop()
+	t.Fatalf("失联期间 Put(err) 后再未重连成功（attempts=%d）——#81/#84 回归", attempts.Load())
+}
