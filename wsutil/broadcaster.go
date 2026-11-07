@@ -223,10 +223,18 @@ func (b *Broadcaster) Unregister(room string, conn Conn) {
 }
 
 // Broadcast 向指定房间广播原始字节消息。
+//
+// ⚠️ **message 会被拷贝一份**（#78，与 Outbox.Send 同口径）。投递进 channel
+// 之后、WriteMessage 真正执行之前有一段异步窗口；调用方若复用 buffer
+// （buf = buf[:0] 再填、循环里 marshal 进同一块内存——高性能广播路径的
+// 标准写法），在途消息会被改写成另一帧的内容：客户端收到串包/坏 JSON，
+// 服务端无任何报错。一次拷贝换「广播出去的字节确定是 Broadcast 返回那一刻
+// 的字节」。BroadcastEvent 每次 marshal 出新切片，天然安全。
 func (b *Broadcaster) Broadcast(room string, message []byte) {
 	if b.closed.Load() {
 		return
 	}
+	message = cloneBytes(message)
 	select {
 	case b.broadcast <- &broadcastMessage{room: room, message: message}:
 	case <-b.stop:

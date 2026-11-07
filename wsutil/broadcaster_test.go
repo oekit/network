@@ -71,6 +71,58 @@ func waitFor(t *testing.T, desc string, cond func() bool) {
 	t.Fatalf("timed out waiting for: %s", desc)
 }
 
+// gateConn 在 WriteMessage 入口阻塞直到放行：用于确定性地编排「Broadcast
+// 返回之后、写真正执行之前」这个窗口（#78 的复现场景）。
+type gateConn struct {
+	mockConn
+	entered chan struct{}
+	release chan struct{}
+}
+
+func newGateConn() *gateConn {
+	return &gateConn{
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+}
+
+func (g *gateConn) WriteMessage(messageType int, data []byte) error {
+	close(g.entered)
+	<-g.release
+	return g.mockConn.WriteMessage(messageType, data)
+}
+
+// TestBroadcaster_BroadcastClonesCallerBuffer 回归（#78）：Broadcast 把调用方
+// []byte 交给异步写 goroutine，无拷贝时调用方复用 buffer（buf = buf[:0] 再填、
+// 循环里 marshal 进同一块内存——高性能广播路径的标准写法）会让在途消息被
+// 改写成另一帧：客户端收到串包/坏 JSON，服务端无任何报错。
+//
+// 编排：写 goroutine 已进入 WriteMessage 但尚未读走字节时，调用方改写
+// buffer 再放行——无拷贝时写入的就是改写后的字节（确定性红），入口拷贝后
+// 写入的是 Broadcast 返回那一刻的字节（确定性绿）。与 Outbox.Send 的
+// cloneBytes 口径对齐。
+func TestBroadcaster_BroadcastClonesCallerBuffer(t *testing.T) {
+	b := NewBroadcaster()
+	defer b.Close()
+
+	conn := newGateConn()
+	b.Register("room:clone", conn) // Register 经 run() 同步处理，返回即已入房
+
+	buf := []byte(`{"frame":1}`)
+	b.Broadcast("room:clone", buf)
+
+	// 写 goroutine 已进入 WriteMessage（持有它将要写的字节引用）
+	<-conn.entered
+	// 调用方复用 buffer 写下一帧（等长覆盖，模拟 marshal 进同一块内存）
+	copy(buf, []byte(`{"frame":2}`))
+	close(conn.release)
+
+	waitFor(t, "write recorded", func() bool { return conn.writtenCount() == 1 })
+	if got := string(conn.firstWritten()); got != `{"frame":1}` {
+		t.Fatalf("Broadcast must clone the caller buffer; mutation leaked: got %s", got)
+	}
+}
+
 func TestBroadcaster_RegisterAndCount(t *testing.T) {
 	b := NewBroadcaster()
 	defer b.Close()
