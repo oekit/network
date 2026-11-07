@@ -1,5 +1,9 @@
 # Changelog — oekit/network
 
+## [v0.7.12] — 2026-11-08
+
+- build: 依赖地板对齐——本版把 oekit 依赖地板抬到各依赖当前最新已发布版本（matrix-tools/scripts/align_floors.py 维护轮）
+
 ## [v0.7.11] — 2026-11-07
 
 - fix(conn): 失联期间 Put(err) 无害 no-op 且不吞已排定重连——初始拨号失败自愈路径补齐（主体已随 #64/v0.7.9 落地）（#81 #84）
