@@ -145,7 +145,12 @@ func (c *Client) Close() {
 }
 
 // Publish 发布消息到指定主题。
+// nil ctx 按 context.Background 处理（#79，与同仓 WaitN/Acquire/DoValue
+// 的兜底口径一致）。
 func (c *Client) Publish(ctx context.Context, subject string, data []byte) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("nats: publish cancelled: %w", err)
 	}
@@ -155,7 +160,11 @@ func (c *Client) Publish(ctx context.Context, subject string, data []byte) error
 // PublishWithTraceID 发布消息并从 ctx 提取 trace_id 注入 NATS message header。
 // 配合 SubscribeJSON 自动恢复 trace_id 形成跨消息链路的完整追踪。
 // ctx 中无 trace_id 时退化为普通 Publish，行为向后兼容。
+// nil ctx 按 context.Background 处理（#79）。
 func (c *Client) PublishWithTraceID(ctx context.Context, subject string, data []byte) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("nats: publish cancelled: %w", err)
 	}
@@ -163,7 +172,11 @@ func (c *Client) PublishWithTraceID(ctx context.Context, subject string, data []
 }
 
 // PublishJSON 发布 JSON 编码的消息。
+// nil ctx 按 context.Background 处理（#79）。
 func (c *Client) PublishJSON(ctx context.Context, subject string, v any) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("nats: publish cancelled: %w", err)
 	}
@@ -176,7 +189,11 @@ func (c *Client) PublishJSON(ctx context.Context, subject string, v any) error {
 
 // PublishJSONWithTraceID 发布 JSON 消息并从 ctx 提取 trace_id 注入 NATS message header。
 // 配合 SubscribeJSON 自动恢复 trace_id 形成跨消息链路的完整追踪。
+// nil ctx 按 context.Background 处理（#79）。
 func (c *Client) PublishJSONWithTraceID(ctx context.Context, subject string, v any) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("nats: publish cancelled: %w", err)
 	}

@@ -58,7 +58,11 @@ func (js *JetStream) DeleteStream(ctx context.Context, name string) error {
 }
 
 // Publish 发布消息到 JetStream 流。
+// nil ctx 按 context.Background 处理（#79，与 Client.Publish 口径一致）。
 func (js *JetStream) Publish(ctx context.Context, subject string, data []byte, opts ...jetstream.PublishOpt) (*jetstream.PubAck, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	ack, err := js.js.Publish(ctx, subject, data, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("nats: jetstream publish %s: %w", subject, err)
@@ -67,6 +71,7 @@ func (js *JetStream) Publish(ctx context.Context, subject string, data []byte, o
 }
 
 // PublishJSON 发布 JSON 消息到 JetStream 流。
+// nil ctx 按 context.Background 处理（#79）。
 func (js *JetStream) PublishJSON(ctx context.Context, subject string, v any, opts ...jetstream.PublishOpt) (*jetstream.PubAck, error) {
 	data, err := json.Marshal(v)
 	if err != nil {

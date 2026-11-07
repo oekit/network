@@ -274,3 +274,21 @@ func TestDial_NilConfig(t *testing.T) {
 		t.Fatal("a nil client config should be rejected")
 	}
 }
+
+// TestDial_NilContext 回归（#79）：nil ctx 兜底 context.Background，不再
+// nil 解引用 panic——与同仓 ratelimit.TokenBucket.WaitN / syncx.Gate.Acquire /
+// retry.DoValue 的兜底口径一致。拨一个立即 refused 的本地端口：期望拿到
+// 拨号错误（而非 panic），Background（无截止、永不取消）即「调用方没有
+// 额外约束」。
+func TestDial_NilContext(t *testing.T) {
+	client, err := Dial(nil, "127.0.0.1:1", clientConfig(), DialOptions{})
+	if err == nil {
+		if client != nil {
+			_ = client.Close()
+		}
+		t.Fatal("expected a dial error to the refused port, got nil")
+	}
+	if client != nil {
+		t.Fatal("expected a nil client on error")
+	}
+}

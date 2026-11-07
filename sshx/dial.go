@@ -62,6 +62,9 @@ type DialOptions struct {
 //
 // ctx 对连接阶段有效：放弃的调用方不会留下一个开着的 socket。握手由固定
 // 界限、调用方预算与 ctx 的截止时间三者中最小的那个界定。
+// nil ctx 按 context.Background 处理（#79，与同仓 ratelimit.TokenBucket.WaitN /
+// syncx.Gate.Acquire / retry.DoValue 的兜底口径一致），不留给调用方一个
+// nil 解引用 panic。
 //
 // 返回的 client 拥有这条连接：Close 它就关掉 socket。
 //
@@ -71,6 +74,11 @@ type DialOptions struct {
 func Dial(ctx context.Context, addr string, cc *ssh.ClientConfig, opts DialOptions) (*ssh.Client, error) {
 	if cc == nil {
 		return nil, fmt.Errorf("dial %s: no client config", addr)
+	}
+	// nil ctx 兜底 Background（#79）：ctx 只取 Deadline/取消语义，
+	// Background（无截止、永不取消）即「调用方没有额外约束」。
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	connect := opts.Connect
 	if connect <= 0 {
