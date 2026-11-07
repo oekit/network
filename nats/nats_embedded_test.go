@@ -35,7 +35,7 @@ func newTestClient(t *testing.T, opts ...NatsOption) *Client {
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
-	t.Cleanup(c.Close)
+	t.Cleanup(func() { _ = c.Close(context.Background()) })
 	return c
 }
 
@@ -555,4 +555,66 @@ type traceCtxPair struct {
 	ctx context.Context
 	tag string
 	n   int
+}
+
+// TestClient_Close_DrainTimeoutFallsBack 回归（#83/#86）：一个 handler 阻塞时，
+// 旧 Close() 内部的 conn.Drain() 会等所有在途消息处理完才返回——关停挂死且
+// 无 ctx 可打断。现在 Close(ctx) 在 ctx 到期后回退 conn.Close() 强制关闭，
+// 返回包装的 ctx 错误，关停有界。
+func TestClient_Close_DrainTimeoutFallsBack(t *testing.T) {
+	c := newTestClient(t)
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	sub, err := c.Subscribe("close.blocked", func(m *nats.Msg) {
+		close(entered)
+		<-release // 模拟永久阻塞的 handler（在途消息处理不完 → Drain 等待）
+	})
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	unsubscribeOnCleanup(t, sub)
+
+	if err = c.Publish(context.Background(), "close.blocked", []byte("m")); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	<-entered // 确保 Drain 被调用时确有在途消息卡在 handler 里
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	err = c.Close(ctx)
+	if err == nil {
+		t.Fatal("expected timeout error from Close with a blocked handler")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("Close err = %v, want wrap of context.DeadlineExceeded", err)
+	}
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Fatalf("Close blocked %v; must be bounded by ctx", elapsed)
+	}
+	if status := c.Conn().Status(); status != nats.CLOSED {
+		t.Errorf("conn status = %v, want CLOSED after forced close", status)
+	}
+	close(release) // 放行 handler，测试收尾
+}
+
+// TestClient_Close_IdempotentNilCtx 覆盖 Close(ctx) error 的其余契约
+// （#83/#86）：nil ctx 兜底 Background（#79 口径）；sync.Once 幂等——仅首次
+// 执行关闭并返回其结果，重复调用返回 nil；无阻塞 handler 时正常路径返回 nil。
+func TestClient_Close_IdempotentNilCtx(t *testing.T) {
+	c := newTestClient(t)
+
+	// 类型化的 nil（而非字面 nil）：staticcheck SA1012 拦字面 nil 传参，
+	// 而 nil 值的 context.Context 变量在运行时就是 nil 接口——回归语义不变。
+	var nilCtx context.Context
+	if err := c.Close(nilCtx); err != nil {
+		t.Fatalf("Close(nil ctx) = %v, want nil on normal drain", err)
+	}
+	if err := c.Close(context.Background()); err != nil {
+		t.Errorf("second Close = %v, want nil (sync.Once idempotent)", err)
+	}
+	if c.IsConnected() {
+		t.Error("expected disconnected after Close")
+	}
 }

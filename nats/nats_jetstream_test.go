@@ -27,7 +27,7 @@ func newJetStreamTestClient(t *testing.T) *Client {
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
-	t.Cleanup(c.Close)
+	t.Cleanup(func() { _ = c.Close(context.Background()) })
 	return c
 }
 
