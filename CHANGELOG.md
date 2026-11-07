@@ -1,5 +1,15 @@
 # Changelog — oekit/network
 
+## [v0.7.11] — 2026-11-07
+
+- fix(conn): 失联期间 Put(err) 无害 no-op 且不吞已排定重连——初始拨号失败自愈路径补齐（主体已随 #64/v0.7.9 落地）（#81 #84）
+- fix(streamx): Hub 每 Source 独立拉取 goroutine 并发汇聚——长驻 Source 阻塞 Next 不再饿死后续源（#82 #85）
+- fix(nats): Close(ctx) error 等待真正排空完成、超时回退强制关闭——Drain 无限阻塞关停关闭（BREAKING：Close 签名改带 ctx，PR #91）（#83 #86）
+- fix(wsutil): 按 Conn 串行写锁——广播等待超时后不再与下一轮并发写同一 Conn 损坏 websocket 帧（#87）
+- fix(nats): RequestJSON 的 ctx 移至首参——与 Request 及 Go 惯例一致（BREAKING，PR #91）（#88）
+
+关联问题单：network#81、network#82、network#83、network#84、network#85、network#86、network#87、network#88。
+
 ## [v0.7.10] — 2026-11-07
 
 - fix(conn): NewDefaultManager 拨号带 DefaultDialTimeout=10s——裸 net.Dial 对黑洞对端不再挂 OS 级时长（#77）
