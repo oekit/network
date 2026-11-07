@@ -339,7 +339,12 @@ func (c *Client) Request(ctx context.Context, subject string, data []byte, timeo
 
 // RequestJSON 发送 JSON 请求并反序列化响应。
 // 使用 context 控制超时和取消。
-func RequestJSON[Req, Resp any](c *Client, ctx context.Context, subject string, req *Req, timeout time.Duration) (*Resp, error) {
+//
+// ⚠️ BREAKING（#88，0.x 阶段允许）：ctx 由第二位移至首位，与 Request 及
+// Go「ctx 首参」惯例对齐——旧形态 RequestJSON[Req, Resp](c, ctx, ...) 与
+// 同文件 Request(ctx, ...) 形态不一致，IDE 补全/人工誊写极易把 subject
+// 传进 ctx 位。亦与 mq.Requester.RequestJSON 的接口形态一致。
+func RequestJSON[Req, Resp any](ctx context.Context, c *Client, subject string, req *Req, timeout time.Duration) (*Resp, error) {
 	data, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("nats: marshal request: %w", err)

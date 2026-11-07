@@ -469,7 +469,7 @@ func TestRequestJSON_RoundTrip(t *testing.T) {
 	}
 	unsubscribeOnCleanup(t, sub)
 
-	got, err := RequestJSON[req, resp](c, context.Background(), "test.rpcjson", &req{N: 21}, time.Second)
+	got, err := RequestJSON[req, resp](context.Background(), c, "test.rpcjson", &req{N: 21}, time.Second)
 	if err != nil {
 		t.Fatalf("RequestJSON: %v", err)
 	}
@@ -486,7 +486,7 @@ func TestRequestJSON_MarshalError(t *testing.T) {
 	type req struct {
 		Bad chan int `json:"bad"`
 	}
-	_, err := RequestJSON[req, struct{}](c, context.Background(), "test.noop", &req{Bad: make(chan int)}, time.Second)
+	_, err := RequestJSON[req, struct{}](context.Background(), c, "test.noop", &req{Bad: make(chan int)}, time.Second)
 	if err == nil {
 		t.Fatal("expected marshal error, got nil")
 	}
