@@ -506,6 +506,48 @@ func TestIsConnected_ConnectedUrl(t *testing.T) {
 	}
 }
 
+// TestPublish_NilContext 回归（#79）：四个 Publish 入口对 nil ctx 兜底
+// context.Background（与同仓 ratelimit.TokenBucket.WaitN / syncx.Gate.Acquire /
+// retry.DoValue 的兜底口径一致），不再 nil 解引用 panic。兜底是 Background
+// 而非「吞掉消息」：nil ctx 发布的消息订阅方须真能收到。
+func TestPublish_NilContext(t *testing.T) {
+	// 类型化的 nil（而非字面 nil）：staticcheck SA1012 拦字面 nil 传参，
+	// 而 nil 值的 context.Context 变量在运行时就是 nil 接口——回归语义不变。
+	var nilCtx context.Context
+	c := newTestClient(t)
+
+	got := make(chan []byte, 1)
+	sub, err := c.Subscribe("nilctx.roundtrip", func(m *nats.Msg) {
+		got <- append([]byte(nil), m.Data...)
+	})
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	unsubscribeOnCleanup(t, sub)
+
+	if err := c.Publish(nilCtx, "nilctx.roundtrip", []byte("hello")); err != nil {
+		t.Fatalf("Publish(nil ctx): %v", err)
+	}
+	select {
+	case data := <-got:
+		if string(data) != "hello" {
+			t.Errorf("got %q, want %q", data, "hello")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for message published with nil ctx")
+	}
+
+	if err := c.PublishJSON(nilCtx, "nilctx.json", map[string]int{"n": 1}); err != nil {
+		t.Fatalf("PublishJSON(nil ctx): %v", err)
+	}
+	if err := c.PublishWithTraceID(nilCtx, "nilctx.trace", []byte("m")); err != nil {
+		t.Fatalf("PublishWithTraceID(nil ctx): %v", err)
+	}
+	if err := c.PublishJSONWithTraceID(nilCtx, "nilctx.jsontrace", map[string]int{"n": 2}); err != nil {
+		t.Fatalf("PublishJSONWithTraceID(nil ctx): %v", err)
+	}
+}
+
 // traceCtxPair is a small helper struct so the SubscribeJSON tests can
 // send the (ctx, payload) tuple through a single channel without resorting
 // to a generic helper type.

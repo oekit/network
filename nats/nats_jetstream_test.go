@@ -219,3 +219,41 @@ func TestJetStream_PublishJSON_MarshalError(t *testing.T) {
 		t.Fatal("expected marshal error for chan value, got nil")
 	}
 }
+
+// TestJetStream_Publish_NilContext 回归（#79）：JetStream 的 Publish 系列对
+// nil ctx 兜底 context.Background（与 Client.Publish 口径一致）。兜底是
+// Background 而非「吞掉消息」：nil ctx 发布须拿到真实的 PubAck。
+func TestJetStream_Publish_NilContext(t *testing.T) {
+	c := newJetStreamTestClient(t)
+	js, err := c.NewJetStream()
+	if err != nil {
+		t.Fatalf("NewJetStream: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	streamName := "TEST_JS_NILCTX"
+	if createErr := js.CreateStream(ctx, streamName, "nilctx.js.>"); createErr != nil {
+		t.Fatalf("CreateStream: %v", createErr)
+	}
+
+	// 类型化的 nil（而非字面 nil）：staticcheck SA1012 拦字面 nil 传参，
+	// 而 nil 值的 context.Context 变量在运行时就是 nil 接口——回归语义不变。
+	var nilCtx context.Context
+	ack, err := js.Publish(nilCtx, "nilctx.js.one", []byte("hello"))
+	if err != nil {
+		t.Fatalf("Publish(nil ctx): %v", err)
+	}
+	if ack == nil || ack.Stream != streamName {
+		t.Errorf("expected PubAck on stream %s, got %+v", streamName, ack)
+	}
+
+	ack2, err := js.PublishJSON(nilCtx, "nilctx.js.two", map[string]int{"n": 1})
+	if err != nil {
+		t.Fatalf("PublishJSON(nil ctx): %v", err)
+	}
+	if ack2 == nil || ack2.Stream != streamName {
+		t.Errorf("expected PubAck on stream %s, got %+v", streamName, ack2)
+	}
+}
