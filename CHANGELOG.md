@@ -1,5 +1,13 @@
 # Changelog — oekit/network
 
+## [v0.7.10] — 2026-11-07
+
+- fix(conn): NewDefaultManager 拨号带 DefaultDialTimeout=10s——裸 net.Dial 对黑洞对端不再挂 OS 级时长（#77）
+- fix(wsutil): Broadcaster.Broadcast 拷贝调用方 buffer——buffer 复用不再串包，与 Outbox.Send 口径对齐（#78）
+- fix(sshx/nats): Dial/Publish 系列对 nil ctx 兜底 Background——与同仓 WaitN/Acquire/DoValue 口径统一（#79）
+
+关联问题单：network#77、network#78、network#79。
+
 ## [v0.7.9] — 2026-11-06
 
 - build: 矩阵依赖地板对齐（第二轮发版后置）
