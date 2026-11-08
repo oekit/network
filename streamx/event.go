@@ -16,6 +16,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"sync"
 )
 
@@ -39,6 +40,14 @@ type Event struct {
 
 // ErrSinkClosed 表示 Sink 已关闭,Emit 返回它。
 var ErrSinkClosed = errors.New("streamx: sink closed")
+
+// ErrSourceClosed 表示 Source 已关闭,Next 返回它(#104)。
+//
+// 不复用 ErrSinkClosed:那是 **Sink** 语义的哨兵,而 Hub 正是靠
+// errors.Is(err, ErrSinkClosed) 区分「源正常收尾」与「源坏了」(hub.go)——
+// 一个源关闭时抛 Sink 的错误,会被 Hub 判成源故障。耗尽(io.EOF)与关闭
+// (ErrSourceClosed)是两种不同的正常收尾,各有各的哨兵。
+var ErrSourceClosed = errors.New("streamx: source closed")
 
 // Source 是流式输出源抽象(拉模式)。Next 返回 io.EOF 或
 // context.Canceled 表示流结束。
@@ -78,12 +87,17 @@ func NewSliceSource(evs []Event) *SliceSource {
 }
 
 // Next 实现 Source。
+//
+// 哨兵按接口契约(#104):耗尽返回 io.EOF(ErrStreamExhausted 是它的别名),
+// 关闭后返回 ErrSourceClosed——此前耗尽返回自定义哨兵、关闭却抛 **Sink**
+// 语义的 ErrSinkClosed,按 `err == io.EOF` 写的消费方拿不到终止信号,
+// Hub 也把「源正常关闭」判成了源故障。
 func (s *SliceSource) Next(ctx context.Context) (Event, error) {
 	select {
 	case <-ctx.Done():
 		return Event{}, ctx.Err()
 	case <-s.close:
-		return Event{}, ErrSinkClosed
+		return Event{}, ErrSourceClosed
 	default:
 	}
 	s.mu.Lock()
@@ -101,13 +115,20 @@ func (s *SliceSource) Next(ctx context.Context) (Event, error) {
 }
 
 // Close 实现 Source。
+//
+// 幂等:重复 Close 只关一次通道,返回 nil。
 func (s *SliceSource) Close() error {
 	s.once.Do(func() { close(s.close) })
 	return nil
 }
 
 // ErrStreamExhausted 表示 SliceSource 已 emit 完所有事件。
-var ErrStreamExhausted = errors.New("streamx: source exhausted")
+//
+// 它是 io.EOF 的**别名**(#104):Source 接口契约写明「Next 返回 io.EOF
+// 表示源耗尽」,按 `err == io.EOF` / errors.Is(err, io.EOF) 写的消费方必须
+// 拿得到终止信号。旧名字保留——errors.Is(err, ErrStreamExhausted) 同样
+// 成立,既有调用方不受影响。
+var ErrStreamExhausted = io.EOF
 
 // sequenceToID 把 Sequence 转成"seq-N"格式的字符串 ID。
 func sequenceToID(s Sequence) string {

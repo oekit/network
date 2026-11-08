@@ -295,3 +295,112 @@ func TestDial_NilContext(t *testing.T) {
 		t.Fatal("expected a nil client on error")
 	}
 }
+
+// holdListener 起一个「连接被接受、对端永不说话」的监听器：连接完成 TCP
+// 握手，但 SSH 握手会一直挂到调用方的截止时间。这正是 #106 需要的形态：
+// 「连得上但慢」的连接。
+func holdListener(t *testing.T) *net.TCPListener {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	hold := make(chan struct{})
+	t.Cleanup(func() { close(hold); _ = ln.Close() })
+	go func() {
+		for {
+			conn, cerr := ln.Accept()
+			if cerr != nil {
+				return
+			}
+			go func() {
+				<-hold
+				_ = conn.Close()
+			}()
+		}
+	}()
+	return ln.(*net.TCPListener)
+}
+
+// TestDial_BudgetCoversConnectPlusHandshake 回归（#106）：Budget 是**总
+// 预算**——连接阶段耗掉的每一毫秒都从预算里扣，握手窗口按剩余预算夹取。
+//
+// 旧实现在拨号**前**把握手窗口按 T0 时刻的剩余预算定死、又锚定在拨号完成
+// 时刻 ⇒ 连接耗 T 时总耗时 ≈ T + Budget（可接近 2×预算）。这里注入「慢
+// 连接 350ms + 对端沉默」：预算 500ms，总耗时必须 ≤ 预算 + 余量，而不是
+// ≈ 850ms。
+func TestDial_BudgetCoversConnectPlusHandshake(t *testing.T) {
+	ln := holdListener(t)
+
+	slowConnect := func(ctx context.Context, timeout time.Duration, _, _ string) (net.Conn, error) {
+		time.Sleep(350 * time.Millisecond) // 连接阶段耗 350ms
+		// net.Dial（不是 ln.Accept()——那会和 holdListener 的 accept
+		// 循环抢同一条连接，抢输的 Accept 永远等不到下一条）。
+		return net.Dial("tcp", ln.Addr().String())
+	}
+
+	start := time.Now()
+	_, err := Dial(context.Background(), ln.Addr().String(), clientConfig(),
+		DialOptions{Handshake: 10 * time.Second, Budget: 500 * time.Millisecond, dialFunc: slowConnect})
+	if err == nil {
+		t.Fatal("the call must fail at the budget, not sit in a handshake nobody will use")
+	}
+	if elapsed := time.Since(start); elapsed > 650*time.Millisecond {
+		t.Errorf("the call took %s; the budget was 500ms and must cover connect + handshake (#106)", elapsed)
+	}
+	// 慢在握手 ⇒ 超时要按超时说，不能打扮成拒绝。
+	if !strings.Contains(err.Error(), "did not finish within") {
+		t.Errorf("the error must say the handshake timed out: %v", err)
+	}
+}
+
+// TestDial_ContextDeadlineAnchoredAfterConnect 回归（#106）的另一半：ctx
+// 的截止时间压住握手，锚点必须在拨号**之后**。旧实现用 T0 时刻的剩余时间
+// 定握手窗口、又从拨号完成时刻起算 ⇒ 总耗时超出 ctx 截止时间约 T。
+// 这里 ctx 截止 500ms、慢连接耗 350ms：总耗时必须 ≈ 截止时间，而不是
+// ≈ 850ms。
+func TestDial_ContextDeadlineAnchoredAfterConnect(t *testing.T) {
+	ln := holdListener(t)
+
+	slowConnect := func(ctx context.Context, timeout time.Duration, _, _ string) (net.Conn, error) {
+		time.Sleep(350 * time.Millisecond)
+		return net.Dial("tcp", ln.Addr().String())
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	_, err := Dial(ctx, ln.Addr().String(), clientConfig(),
+		DialOptions{dialFunc: slowConnect})
+	if err == nil {
+		t.Fatal("the call must respect the context deadline")
+	}
+	if elapsed := time.Since(start); elapsed > 650*time.Millisecond {
+		t.Errorf("the call took %s; the context deadline was 500ms and must bound the whole call (#106)", elapsed)
+	}
+}
+
+// TestDial_BudgetExhaustedByConnect_FailsFast 钉住总预算的另一面：连接阶段
+// 恰好耗尽预算时，不再做一场没人会等结果的握手——立即放弃并说清原因。
+func TestDial_BudgetExhaustedByConnect_FailsFast(t *testing.T) {
+	ln := holdListener(t)
+
+	slowConnect := func(ctx context.Context, timeout time.Duration, _, _ string) (net.Conn, error) {
+		time.Sleep(120 * time.Millisecond)
+		return net.Dial("tcp", ln.Addr().String())
+	}
+
+	start := time.Now()
+	_, err := Dial(context.Background(), ln.Addr().String(), clientConfig(),
+		DialOptions{Budget: 120 * time.Millisecond, dialFunc: slowConnect})
+	if err == nil {
+		t.Fatal("an exhausted budget must fail fast, not attempt a handshake")
+	}
+	if elapsed := time.Since(start); elapsed > 400*time.Millisecond {
+		t.Errorf("the call took %s after the budget was already spent; it must give up immediately", elapsed)
+	}
+	if !strings.Contains(err.Error(), "budget") {
+		t.Errorf("the error must say the budget was exhausted: %v", err)
+	}
+}

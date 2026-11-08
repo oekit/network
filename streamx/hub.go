@@ -3,6 +3,7 @@ package streamx
 import (
 	"context"
 	"errors"
+	"io"
 	"sync"
 
 	"github.com/oekit/concurrency/async"
@@ -118,8 +119,11 @@ func (h *Hub) Run(ctx context.Context) error {
 		select {
 		case res := <-events:
 			if res.err != nil {
-				if !errors.Is(res.err, ErrStreamExhausted) && !errors.Is(res.err, ErrSinkClosed) {
-					// #67：坏源跳过必须留痕（耗尽/关闭属正常收尾，不留痕）
+				// #67：坏源跳过必须留痕（耗尽/关闭属正常收尾，不留痕）。
+				// 正常收尾的哨兵按 #104 的契约口径：io.EOF（ErrStreamExhausted
+				// 是它的别名）与 ErrSourceClosed。不再豁免 ErrSinkClosed——
+				// 那是 **Sink** 语义的哨兵，一个返回它的源就是坏了，该留痕。
+				if !errors.Is(res.err, io.EOF) && !errors.Is(res.err, ErrSourceClosed) {
 					hubLog.Warn("streamx source failed, skipping source",
 						"err", res.err, "source_index", res.idx)
 				}

@@ -1,5 +1,19 @@
 # Changelog — oekit/network
 
+## [v0.7.13] — 2026-11-08
+
+- fix(conn): Manager.Stop 与重连竞态下已拨通连接约 50% 概率永不 Close 的 fd 泄漏——`connc` 改无缓冲，投递只能与 loop 接收会合，Stop 后必走 stopc 分支就地 Close（注释承诺的「必须就地 Close」真正兑现）（#98）
+- fix(conn): `Exponential` 整数溢出回绕——导出函数对任何 int64 输入返回 (0, 1 分钟] 的退避；此前输入接近 MaxInt64 时 `d *= 2` 回绕成负数、躲过「> 1 分钟」钳制直接漏出负退避（#102）
+- fix(nats): `JetStream.getOrCreateConsumer` 建 durable 消费者——此前只给 Name 的临时消费者空闲约 5s 被服务端回收，重建后 ack 水位丢失、整条流重投（#99）
+- fix(nats): `Request`/`RequestJSON` 与 JetStream 系列对 nil ctx 兜底 Background——与 Publish 系列同仓口径，同一份客户端不再「一半容忍 nil、一半崩进程」（#101）
+- fix(nats): `JetStream.Fetch`/`Next` 经 `jetstream.FetchContext` 把 ctx 注入取消息阶段——调用方取消不再等 SDK DefaultExpires（30s）；显式 FetchMaxWait 时以显式超时为准回退（SDK 禁止两者同用）；Consume/Messages 文档化「只由 Stop() 停止」（#103）
+- fix(sshx): `DetectKeyType` 入口对 nil ctx 兜底 Background——带口令/损坏私钥必走的 ssh-keygen 分支此前被 exec.CommandContext 的 nil ctx panic 打穿（#79 口径补全）（#100）
+- fix(sshx): `Dial` 的 Budget 按**总预算**实现、ctx 截止时间在拨号**之后**求值——慢连接下总耗时不再可接近 2×预算、不再超出 ctx 截止时间约 T；预算/ctx 被连接耗尽时立即放弃而非做一场没人等结果的握手（#106）
+- fix(streamx): `SliceSource` 哨兵对齐 Source 接口契约——耗尽返回 io.EOF（`ErrStreamExhausted` 保留为别名），关闭返回新增 `ErrSourceClosed`、不再复用 Sink 语义的 `ErrSinkClosed`；Hub 侧「正常收尾不留痕」同步换新哨兵口径（#104）
+- fix(wsutil): `Outbox` 写失败时「正在写的那一帧」计入 Dropped——「Send(true) − Written = Dropped」的计数闭合恒等式成立（drain 冲刷路径同口径）；新增 `Closed()` 拆分 Send 两种 false（队列满 vs 管道已关）（#105）
+
+关联问题单：network#98、network#99、network#100、network#101、network#102、network#103、network#104、network#105、network#106。
+
 ## [v0.7.12] — 2026-11-08
 
 - build: 依赖地板对齐——本版把 oekit 依赖地板抬到各依赖当前最新已发布版本（matrix-tools/scripts/align_floors.py 维护轮）

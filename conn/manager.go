@@ -128,7 +128,14 @@ func (m *Manager) Write(b []byte) (int, error) {
 
 func (m *Manager) loop() {
 	conn := m.doDial()
-	connc := make(chan net.Conn, 1)
+	// connc 必须**无缓冲**（#98）：它只承载「重连拨号的结果」，而唯一接收者
+	// 是本 loop。带缓冲（cap=1）时，Stop 之后 `connc <- nc` 与 `<-m.stopc`
+	// 同时就绪，select 随机挑一个——挑中 send 就把已拨通的连接塞进一个
+	// 再无人消费的缓冲区 ⇒ 连接永不 Close ⇒ fd 泄漏（约 50% 概率/次）。
+	// 无缓冲时 send 只能与 loop 的接收**会合**才完成：loop 已退出（Stop 后）
+	// 则 send 永不就绪，goroutine 必走 stopc 分支就地 Close——「拨通后无人
+	// 接收」的连接在结构上不可能漏掉，而不是靠 select 运气。
+	connc := make(chan net.Conn)
 	var reconnectc <-chan time.Time
 	backoff := time.Second
 
@@ -167,16 +174,16 @@ func (m *Manager) loop() {
 			reconnectc = nil
 			async.GoSafe(func() {
 				nc := m.doDial()
-				if nc == nil {
-					connc <- nil
-					return
-				}
-				// Stop 后 loop 已退出、无人接收——已拨通的连接必须就地
-				// Close，否则 fd 泄漏（缓冲 chan 只吞不关）
+				// 无缓冲 connc（#98）：Stop 后 loop 已退出、无人接收——
+				// send 永不就绪，必走 stopc 分支；已拨通的连接**就地
+				// Close**，否则 fd 泄漏。两条分支都收到 nil（拨号失败）
+				// 时 Close 是 no-op，无需特判。
 				select {
 				case connc <- nc:
 				case <-m.stopc:
-					_ = nc.Close()
+					if nc != nil {
+						_ = nc.Close()
+					}
 				}
 			})
 
@@ -216,12 +223,30 @@ func (m *Manager) doDial() net.Conn {
 
 // Exponential 计算指数退避时间（带 ±50% 抖动），上限 1 分钟。
 // 用于避免重连风暴（thundering herd）。
+//
+// 输入被夹进 [正数, 半分钟] 再翻倍（#102）：此前的 `d *= 2` 无溢出检查，
+// d 接近 math.MaxInt64 时翻倍回绕成负数，而「> time.Minute」的钳制对负数
+// 不成立 ⇒ 导出函数直接返回负退避——交给 time.After 等价于立即触发，恰是
+// 它要防的重连风暴。现在乘法前先判界（> 半分钟即置为上限，翻倍必然越界），
+// 结果再钳一次上限、并对非正数兜底一个最小正退避——「上限 1 分钟」对任何
+// int64 都成立。
 func Exponential(d time.Duration) time.Duration {
-	d *= 2
+	if d > time.Minute/2 {
+		// 翻倍必越上限，直接置为上限（翻倍后的钳制结果与此一致）
+		d = time.Minute
+	} else {
+		// 此时 d ≤ 半分钟 ⇒ d*2 ≤ 1 分钟，不会回绕
+		d *= 2
+	}
 	jitter := rand.Float64() + 0.5
 	d = time.Duration(int64(float64(d.Nanoseconds()) * jitter))
 	if d > time.Minute {
 		d = time.Minute
+	}
+	// 非正数兜底：极端入参（翻倍/抖动回绕）或调用方传了 ≤0 的输入时，
+	// 不退化为「无退避的立即重连」
+	if d <= 0 {
+		d = time.Nanosecond
 	}
 	return d
 }

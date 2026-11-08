@@ -189,3 +189,29 @@ func TestParseSinglePublicKey(t *testing.T) {
 		}
 	})
 }
+
+// TestDetectKeyType_NilContext 回归（#100）：解析不了的私钥（带口令/损坏/
+// 非 OpenSSH 格式）必然走到第二级 ssh-keygen，而 exec.CommandContext 对
+// nil ctx 直接 panic——#79 的兜底只盖了 Dial，没盖这条路径。现在入口兜底
+// Background（#100，与 #79 同仓口径）：nil ctx 走完三级回落拿头结论，不再
+// 崩进程。
+func TestDetectKeyType_NilContext(t *testing.T) {
+	// 一份内容坏掉的 OpenSSH 私钥：ParsePrivateKey 解析不了 ⇒ 进第二级
+	// （此前在这里 panic），ssh-keygen 也读不出 ⇒ 落到第三级文件头。
+	path := filepath.Join(t.TempDir(), "broken.pem")
+	broken := "-----BEGIN OPENSSH PRIVATE KEY-----\nnot-a-real-key\n-----END OPENSSH PRIVATE KEY-----\n"
+	if err := os.WriteFile(path, []byte(broken), 0o600); err != nil {
+		t.Fatalf("write the broken key: %v", err)
+	}
+
+	// 类型化的 nil（而非字面 nil）：staticcheck SA1012 拦字面 nil 传参，
+	// 而 nil 值的 context.Context 变量在运行时就是 nil 接口——回归语义不变。
+	var nilCtx context.Context
+	kind, err := DetectKeyType(nilCtx, path)
+	if err != nil {
+		t.Fatalf("DetectKeyType(nil ctx): %v (nil ctx must fall back to Background, not panic, #100)", err)
+	}
+	if !strings.Contains(kind, "openssh") {
+		t.Errorf("type = %q, want the header-level openssh-format conclusion", kind)
+	}
+}
