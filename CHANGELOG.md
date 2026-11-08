@@ -1,5 +1,12 @@
 # Changelog — oekit/network
 
+## [v0.7.14] — 2026-11-09
+
+- fix(sshx): 握手超时/拒绝类型化错误——errors.Is 可判别且措辞逐字兼容（#116）
+- fix(wsutil): Outbox.Send 检查与入队原子化——Close 后帧不滞留（#117）
+
+关联问题单：network#116、network#117。
+
 ## [v0.7.13] — 2026-11-08
 
 - fix(conn): Manager.Stop 与重连竞态下已拨通连接约 50% 概率永不 Close 的 fd 泄漏——`connc` 改无缓冲，投递只能与 loop 接收会合，Stop 后必走 stopc 分支就地 Close（注释承诺的「必须就地 Close」真正兑现）（#98）
