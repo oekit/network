@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"errors"
+	"fmt"
 	"net"
 	"strings"
 	"sync"
@@ -159,6 +161,29 @@ func TestDial_GivesUpOnAHandshakeThatNeverFinishes(t *testing.T) {
 	// is the string the caller watches for).
 	if !strings.Contains(err.Error(), "did not finish within") {
 		t.Errorf("the timeout was not told apart from a refusal: %v", err)
+	}
+	// #116：措辞之外还要有类型——集成方的重试分类不能被迫对措辞做字符串
+	// 匹配（上游任何措辞调整都会静默翻转分类）。
+	var hte *HandshakeTimeoutError
+	if !errors.As(err, &hte) {
+		t.Fatalf("the timeout must be typed (*HandshakeTimeoutError, #116): %v", err)
+	}
+	if hte.Addr != ln.Addr().String() {
+		t.Errorf("Addr = %q, want %q", hte.Addr, ln.Addr().String())
+	}
+	if hte.Bound != 150*time.Millisecond {
+		t.Errorf("Bound = %s, want 150ms (the effective handshake bound)", hte.Bound)
+	}
+	if !errors.Is(err, ErrHandshakeTimeout) {
+		t.Errorf("errors.Is(err, ErrHandshakeTimeout) = false, want true (#116)")
+	}
+	if errors.Is(err, ErrHandshakeRejected) {
+		t.Errorf("a timeout must not be classifiable as a rejection (#116)")
+	}
+	// 原因链保留：net.Error 仍能从链上 As 出来——类型化不改底层事实。
+	var ne net.Error
+	if !errors.As(err, &ne) || !ne.Timeout() {
+		t.Errorf("the chain must still surface a net.Error with Timeout() = true: %v", err)
 	}
 }
 
@@ -402,5 +427,133 @@ func TestDial_BudgetExhaustedByConnect_FailsFast(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "budget") {
 		t.Errorf("the error must say the budget was exhausted: %v", err)
+	}
+}
+
+// refuseSSH 是一个「说了 SSH 但不让进」的服务端：完成版本交换，走到认证
+// 一步就拒绝。#116 需要的另一种形态——与「接受连接但沉默」的超时相对。
+func refuseSSH(t *testing.T) net.Listener {
+	t.Helper()
+	_, key, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate a host key: %v", err)
+	}
+	signer, err := ssh.NewSignerFromKey(key)
+	if err != nil {
+		t.Fatalf("sign the host key: %v", err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			conn, cerr := ln.Accept()
+			if cerr != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				cfg := &ssh.ServerConfig{
+					// 凭据永远不对：让调用方拿到的是「拒绝」，不是超时。
+					PasswordCallback: func(ssh.ConnMetadata, []byte) (*ssh.Permissions, error) {
+						return nil, errors.New("wrong password")
+					},
+				}
+				cfg.AddHostKey(signer)
+				_, _, _, _ = ssh.NewServerConn(c, cfg)
+			}(conn)
+		}
+	}()
+	return ln
+}
+
+// TestDial_HandshakeRejectionIsTyped 回归（#116）：拒绝必须走类型。
+// 集成方的重试分类要分「抖动（重拨）」与「判定（不重拨）」——拒绝是判定
+// 那一类：重拨只是多打几次凭据、掩盖真错误。旧的实现只有措辞区分，上游
+// 任何措辞调整都会静默翻转分类。
+func TestDial_HandshakeRejectionIsTyped(t *testing.T) {
+	ln := refuseSSH(t)
+
+	cc := &ssh.ClientConfig{
+		User:            "ops",
+		Auth:            []ssh.AuthMethod{ssh.Password("wrong")},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+	}
+	_, err := Dial(context.Background(), ln.Addr().String(), cc, DialOptions{})
+	if err == nil {
+		t.Fatal("a refused handshake must fail")
+	}
+
+	var hre *HandshakeRejectedError
+	if !errors.As(err, &hre) {
+		t.Fatalf("the refusal must be typed (*HandshakeRejectedError, #116): %v", err)
+	}
+	if hre.Addr != ln.Addr().String() {
+		t.Errorf("Addr = %q, want %q", hre.Addr, ln.Addr().String())
+	}
+	if !errors.Is(err, ErrHandshakeRejected) {
+		t.Errorf("errors.Is(err, ErrHandshakeRejected) = false, want true (#116)")
+	}
+	if errors.Is(err, ErrHandshakeTimeout) {
+		t.Errorf("a refusal must not be classifiable as a timeout (#116)")
+	}
+	// 原因链保留：拒绝本身（"unable to authenticate"）仍在链上。
+	if !strings.Contains(err.Error(), "unable to authenticate") {
+		t.Errorf("the refusal's cause must stay on the chain: %v", err)
+	}
+	// 措辞兼容：与类型化之前的文本逐字一致（人读的那路不受影响）。
+	if !strings.HasPrefix(err.Error(), "the SSH handshake with "+ln.Addr().String()+" failed: ") {
+		t.Errorf("the refusal wording must stay compatible: %v", err)
+	}
+	// 底层不是超时：拒绝绝不能被打扮成一个超时。
+	var ne net.Error
+	if errors.As(err, &ne) && ne.Timeout() {
+		t.Errorf("a refusal must not carry a net.Error with Timeout() = true: %v", err)
+	}
+}
+
+// TestHandshakeErrorTypes 钉住两种类型化错误的合同：措辞与既有文本逐字
+// 一致（兼容只做字符串匹配的既有调用方）、Is/As 双路可判、Unwrap 保留
+// 原因链。
+func TestHandshakeErrorTypes(t *testing.T) {
+	base := errors.New("ssh: handshake failed: boom")
+
+	to := &HandshakeTimeoutError{Addr: "10.0.0.1:22", Bound: 150 * time.Millisecond, Err: base}
+	wantTo := "the SSH handshake with 10.0.0.1:22 did not finish within 150ms: ssh: handshake failed: boom"
+	if to.Error() != wantTo {
+		t.Errorf("Error() = %q, want %q (the wording must stay byte-compatible, #116)", to.Error(), wantTo)
+	}
+	if !errors.Is(to, ErrHandshakeTimeout) {
+		t.Error("errors.Is(to, ErrHandshakeTimeout) = false, want true")
+	}
+	if errors.Is(to, ErrHandshakeRejected) {
+		t.Error("the timeout type must not match ErrHandshakeRejected")
+	}
+	if !errors.Is(to, base) {
+		t.Error("Unwrap must keep the cause on the chain")
+	}
+
+	re := &HandshakeRejectedError{Addr: "10.0.0.1:22", Err: base}
+	wantRe := "the SSH handshake with 10.0.0.1:22 failed: ssh: handshake failed: boom"
+	if re.Error() != wantRe {
+		t.Errorf("Error() = %q, want %q (the wording must stay byte-compatible, #116)", re.Error(), wantRe)
+	}
+	if !errors.Is(re, ErrHandshakeRejected) {
+		t.Error("errors.Is(re, ErrHandshakeRejected) = false, want true")
+	}
+	if errors.Is(re, ErrHandshakeTimeout) {
+		t.Error("the rejection type must not match ErrHandshakeTimeout")
+	}
+	if !errors.Is(re, base) {
+		t.Error("Unwrap must keep the cause on the chain")
+	}
+
+	// As 走链：外层再包一层也照样判得出类型。
+	wrapped := fmt.Errorf("retry budget exhausted: %w", to)
+	var hte *HandshakeTimeoutError
+	if !errors.As(wrapped, &hte) {
+		t.Error("errors.As must find the typed error through wrapping")
 	}
 }

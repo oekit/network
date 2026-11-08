@@ -81,6 +81,12 @@ type DialOptions struct {
 // 失败分两种，措辞不同，因为调用方对它们的反应不同：一种是超时（对端没
 // 说 SSH），一种是拒绝（对端说了但不让进）。调用方常常要在这两者之间做
 // 降级决定，所以它们不能被揉成同一句话。
+//
+// 这个区分**不能只靠措辞**（#116）：措辞是给人读的，机器要分类得走类型。
+// 超时返回 *HandshakeTimeoutError、拒绝返回 *HandshakeRejectedError，二者
+// 都能被 errors.As 判别；配套哨兵 ErrHandshakeTimeout / ErrHandshakeRejected
+// 供 errors.Is 使用。措辞保持原样（人读的那路不受影响），分类走类型——
+// 集成方的重试逻辑不再对上游措辞做字符串匹配。
 func Dial(ctx context.Context, addr string, cc *ssh.ClientConfig, opts DialOptions) (*ssh.Client, error) {
 	if cc == nil {
 		return nil, fmt.Errorf("dial %s: no client config", addr)
@@ -155,12 +161,78 @@ func Dial(ctx context.Context, addr string, cc *ssh.ClientConfig, opts DialOptio
 		// out dressed as a refusal.
 		var ne net.Error
 		if errors.As(herr, &ne) && ne.Timeout() {
-			return nil, fmt.Errorf("the SSH handshake with %s did not finish within %s: %w",
-				addr, handshake, herr)
+			return nil, &HandshakeTimeoutError{Addr: addr, Bound: handshake, Err: herr}
 		}
-		return nil, fmt.Errorf("the SSH handshake with %s failed: %w", addr, herr)
+		return nil, &HandshakeRejectedError{Addr: addr, Err: herr}
 	}
 	// 截止时间已经办完事。连接不能被那个「为了握手」的截止时间砍断。
 	_ = conn.SetDeadline(time.Time{})
 	return ssh.NewClient(clientConn, chans, reqs), nil
 }
+
+// 握手失败的类型化哨兵（#116）。它们的措辞**不会**出现在 Dial 的错误文本
+// 里——错误文本保持原措辞（人读），分类走类型：errors.Is 判哨兵、
+// errors.As 判下面的结构体，两条路都能走。
+var (
+	// ErrHandshakeTimeout 标记「握手超时」：对端接受了连接但从不说 SSH
+	// （透明代理、空转的端口转发、回了 SYN 就沉默的中间盒）。典型的降级
+	// 决定是重拨或走降级路径。
+	ErrHandshakeTimeout = errors.New("ssh handshake timeout")
+
+	// ErrHandshakeRejected 标记「握手被拒绝」：对端说了 SSH 但不让进
+	// （链里通常是 "unable to authenticate"）。典型的降级决定是**不**重拨
+	// ——凭据不对，重拨只是多打几次凭据、掩盖真错误。
+	ErrHandshakeRejected = errors.New("ssh handshake rejected")
+)
+
+// HandshakeTimeoutError 是 Dial 的「握手超时」失败（#116）。
+//
+// errors.As 可判；errors.Is(err, ErrHandshakeTimeout) 同样成立。措辞与
+// 既有文本逐字一致（兼容只做字符串匹配的既有调用方）：
+//
+//	the SSH handshake with <addr> did not finish within <bound>: <原因链>
+//
+// Unwrap 保留原因链——对链上的 net.Error 做 errors.As（以及取 os 权限
+// 错误等）都照旧可用。
+type HandshakeTimeoutError struct {
+	// Addr 是对端地址。
+	Addr string
+	// Bound 是这次握手实际生效的界限（连接与预算/ctx 截止夹取之后的值）。
+	Bound time.Duration
+	// Err 是底层握手错误（x/crypto/ssh 包装过的原因链）。
+	Err error
+}
+
+func (e *HandshakeTimeoutError) Error() string {
+	return fmt.Sprintf("the SSH handshake with %s did not finish within %s: %v",
+		e.Addr, e.Bound, e.Err)
+}
+
+func (e *HandshakeTimeoutError) Unwrap() error { return e.Err }
+
+// Is 让 errors.Is(err, ErrHandshakeTimeout) 成立。
+func (e *HandshakeTimeoutError) Is(target error) bool { return target == ErrHandshakeTimeout }
+
+// HandshakeRejectedError 是 Dial 的「握手被拒绝」失败（#116）。
+//
+// errors.As 可判；errors.Is(err, ErrHandshakeRejected) 同样成立。措辞与
+// 既有文本逐字一致：
+//
+//	the SSH handshake with <addr> failed: <原因链>
+//
+// Unwrap 保留原因链（拒绝本身在链里通常是 "unable to authenticate"）。
+type HandshakeRejectedError struct {
+	// Addr 是对端地址。
+	Addr string
+	// Err 是底层握手错误（x/crypto/ssh 包装过的原因链）。
+	Err error
+}
+
+func (e *HandshakeRejectedError) Error() string {
+	return fmt.Sprintf("the SSH handshake with %s failed: %v", e.Addr, e.Err)
+}
+
+func (e *HandshakeRejectedError) Unwrap() error { return e.Err }
+
+// Is 让 errors.Is(err, ErrHandshakeRejected) 成立。
+func (e *HandshakeRejectedError) Is(target error) bool { return target == ErrHandshakeRejected }

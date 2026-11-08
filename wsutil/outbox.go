@@ -24,6 +24,17 @@ import (
 	"github.com/oekit/concurrency/async"
 )
 
+// mu 让「Send 的关闭检查 + 入队」成为**同一个临界区**（#117）：Send 持
+// RLock，Close 持 Lock。
+//
+// 为什么必须是同一临界区：旧的实现先 closed.Load() 再往 channel 里塞，两步
+// 之间没有任何 happens-before——Close 可以落在中间，写协程随之进 drain、看
+// 到空队列就退场，而那一帧随后才入队：Send 返回 true，帧却既不会被写也不
+// 被记账，永久停在 channel 里。RWMutex 的排他性堵住这个交错：Lock 等所有
+// RLock 离场 ⇒ Close 的临界区开始时所有在途 Send 已结束；close(done) 发生
+// 在临界区**里** ⇒ 写协程看到 done 时，队列必然静止——不会再有帧进来，
+// drain 冲到空就是真的冲干净了。
+
 // DefaultOutboxQueueSize 是出站队列的默认长度。
 //
 // 64 帧够应付正常的突发（一次状态刷新往往连带发好几帧），又不至于让一个
@@ -41,6 +52,21 @@ type Outbox struct {
 	queue chan []byte
 	done  chan struct{}
 	wg    sync.WaitGroup
+
+	// mu 让「Send 的关闭检查 + 入队」成为**同一个临界区**（#117）：Send 持
+	// RLock，Close 持 Lock。
+	//
+	// 为什么必须是同一临界区：旧的实现先 closed.Load() 再往 channel 里塞，
+	// 两步之间没有任何 happens-before——Close 可以落在中间，写协程随之进
+	// drain、看到空队列就退场，而那一帧随后才入队：Send 返回 true，帧却
+	// 既不会被写也不被记账，永久停在 channel 里。RWMutex 的排他性堵住这个
+	// 交错：Lock 等所有 RLock 离场 ⇒ Close 的临界区开始时所有在途 Send 已
+	// 结束；close(done) 发生在临界区**里** ⇒ 写协程看到 done 时，队列必然
+	// 静止——不会再有帧进来，drain 冲到空就是真的冲干净了。
+	//
+	// 临界区里没有任何 I/O（Close 不等写协程），Send 只在与 Close 交错的
+	// 瞬间多等几条指令，「永不阻塞」的承诺不受影响。
+	mu sync.RWMutex
 
 	closeOnce sync.Once
 	closed    atomic.Bool
@@ -95,12 +121,22 @@ func NewOutbox(write func([]byte) error, opts OutboxOptions) *Outbox {
 // 管道已关（ob.Closed() 为 true——帧根本没进队列，不算丢帧）与队列满
 // （Closed() 为 false——慢消费者，按文档示例处置对端）。
 //
+// 「是否已关闭」的检查与入队是**同一个临界区**（#117）：返回 true 的帧
+// 必然已经在队列里，写协程的冲刷承诺（见 Close）对它成立——不存在
+// 「检查通过了、帧却落在关闭之后」的交错。返回 false 且 Closed() 为 true
+// 的帧则必然没进队列。
+//
 // ⚠️ **帧会被拷贝一份**。写协程是**稍后**才写它的，而调用方很可能复用
 // 同一个 buffer（buf = buf[:0] 后重新填）——不拷贝的话，上线的是调用方改过
 // 之后的字节，症状是「客户端收到坏 JSON」，而服务端这边什么错都不报。
 // 拷贝换来的是一次分配；相比「坏字节难查」，这笔买卖划算。
 func (o *Outbox) Send(msg []byte) bool {
-	if o == nil || o.closed.Load() {
+	if o == nil {
+		return false
+	}
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	if o.closed.Load() {
 		return false
 	}
 	select {
@@ -126,11 +162,19 @@ func cloneBytes(b []byte) []byte {
 //
 // 幂等。关闭后写协程会**冲刷队列里剩余的帧**再退出——正在推的最后一帧不该
 // 因为对端刚要走就被丢掉。
+//
+// 这个承诺没有例外（#117）：Close 持写锁置 closed、关 done，而 Send 的
+// 「检查 + 入队」持读锁——Close 的临界区开始时，所有通过了检查的在途 Send
+// 都已经把帧放进队列；之后不再有帧能入队。所以写协程冲刷到队列空时，队列
+// 里不会有「迟到的帧」，Send(true) − Written ≡ Dropped 的记账公式把关闭
+// 瞬间也闭合在内。
 func (o *Outbox) Close() {
 	if o == nil {
 		return
 	}
 	o.closeOnce.Do(func() {
+		o.mu.Lock()
+		defer o.mu.Unlock()
 		o.closed.Store(true)
 		close(o.done)
 	})
@@ -168,6 +212,10 @@ func (o *Outbox) Wait() {
 // 以及写失败后随队列一起消失的帧。Send 返回 true 的每一帧都必然闭合进
 // Written 或 Dropped 之一——「Send(true) 次数 − Written」恒等于 Dropped。
 // （管道已关时的 Send 拒收不算：那一帧从未进过队列，Send 返回的是 false。）
+//
+// 关闭瞬间同样闭合（#117）：Send 的检查与入队是同一临界区，不存在「检查
+// 通过了、帧却落在关闭之后」的交错——那类帧曾经两头都不记，公式差值恒增
+// 1 且无法归因。
 //
 // 它非零说明有客户端读得比服务端推得快，或连接已经写不动了——那是**该去看
 // 的东西**：要么客户端该自己慢点读，要么推送的频率该降，要么连接该重连。
@@ -255,6 +303,11 @@ func (o *Outbox) countPending() {
 // drain 冲刷队列里剩下的帧。
 //
 // 只在关闭后跑一次：正在推的最后一帧不该因为对端刚要走就被丢掉。
+//
+// 冲到空就是真的空（#117）：Close 持写锁关 done，写协程能看到 done 时，
+// 所有通过了 Send 检查的帧都已经在队列里、且不会再有新的——不存在「drain
+// 看到空之后才入队的迟到帧」，所以这里不需要「看到 done 且队列确实空」的
+// 两段式再确认。
 func (o *Outbox) drain() {
 	for {
 		select {
