@@ -2,7 +2,9 @@ package wsutil
 
 import (
 	"errors"
+	"runtime"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -468,5 +470,64 @@ func TestOutbox_SendFalseClosedVsFull(t *testing.T) {
 	}
 	if o.Dropped() != 1 {
 		t.Errorf("Dropped = %d after a closed-pipe rejection, want 1 (a frame that never entered the queue is not a dropped frame)", o.Dropped())
+	}
+}
+
+// TestOutbox_SendCloseRaceFramesNeverStranded 回归（#117）：Send 的「关闭
+// 检查 + 入队」与 Close 必须是同一临界区——通过检查的帧不得永久滞留。
+//
+// issue 里的交错（Send 检查通过 ⇒ Close ⇒ 写协程 drain 看到空队退场 ⇒ 帧
+// 才入队）在旧实现里是结构性可能、但窗口极窄，探针只能概率命中（issue 证据
+// 等级 B）。这里用并发压力探针钉住它必须遵守的两条不变式——写协程退场
+// （Wait 返回）之后：
+//
+//  1. 队列必须为空。还留在 channel 里的帧就是「永久滞留」的那类：Send 曾
+//     返回 true，却既不会被写也不会被记账。这里直接检查（同包白盒）。
+//  2. Send(true) 的每一帧都必须被写出去。写入端从不失败 ⇒ sentTrue 必须恰
+//     等于 Written；旧实现下滞留帧使 sentTrue > Written，记账公式裂开。
+//
+// 多轮、Close 的时机逐轮错开（Gosched 次数递增），让它落在 Send 循环的
+// 不同位置上；配合 -race 跑。
+func TestOutbox_SendCloseRaceFramesNeverStranded(t *testing.T) {
+	for round := 0; round < 200; round++ {
+		c := newCollector()
+		o := NewOutbox(c.write, OutboxOptions{QueueSize: 4})
+
+		var sentTrue atomic.Int64
+		stop := make(chan struct{})
+		var wg sync.WaitGroup
+		for s := 0; s < 4; s++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for {
+					select {
+					case <-stop:
+						return
+					default:
+					}
+					if o.Send([]byte("x")) {
+						sentTrue.Add(1)
+					}
+				}
+			}()
+		}
+		// 关闭时机逐轮错开：让 Close 落在 Send 循环的不同位置，而不是总在
+		// 同一个调度点上。
+		for i := 0; i < round%17; i++ {
+			runtime.Gosched()
+		}
+		o.Close()
+		close(stop)
+		wg.Wait()
+		o.Wait()
+
+		if n := len(o.queue); n != 0 {
+			t.Fatalf("round %d: %d frame(s) stranded in the queue after Wait — frames whose Send returned true must never be stranded (#117)", round, n)
+		}
+		if got := sentTrue.Load(); got != o.Written() {
+			t.Fatalf("round %d: Send-true(%d) ≠ Written(%d) — an accepted frame vanished from the accounting (#117)",
+				round, got, o.Written())
+		}
 	}
 }
