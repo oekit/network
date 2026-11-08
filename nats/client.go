@@ -15,6 +15,16 @@ import (
 
 var log = logx.Delegating("nats")
 
+// ensureCtx 兜底 nil ctx 为 context.Background（#79/#101 同仓口径：nil ctx
+// 是常见形态，Background（无截止、永不取消）即「调用方没有额外约束」，
+// 而不是把 nil 透传给标准库/上游 SDK 换一个 panic）。
+func ensureCtx(ctx context.Context) context.Context {
+	if ctx == nil {
+		return context.Background()
+	}
+	return ctx
+}
+
 // Client 是 NATS 客户端封装。
 type Client struct {
 	conn      *nats.Conn
@@ -327,8 +337,11 @@ func extractTraceCtx(m *nats.Msg) context.Context {
 
 // Request 发送请求并等待回复。
 // 使用 context 控制超时和取消。
+// nil ctx 按 context.Background 处理（#101，与同文件 Publish 系列的兜底
+// 口径一致——同一份客户端对所有 API 容忍 nil ctx，不挑入口崩进程）。
 func (c *Client) Request(ctx context.Context, subject string, data []byte, timeout time.Duration) (*nats.Msg, error) {
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+	// nil ctx 直接 WithTimeout 会 panic "cannot create context from nil parent"
+	ctx, cancel := context.WithTimeout(ensureCtx(ctx), timeout)
 	defer cancel()
 	resp, err := c.conn.RequestWithContext(ctx, subject, data)
 	if err != nil {
@@ -339,6 +352,7 @@ func (c *Client) Request(ctx context.Context, subject string, data []byte, timeo
 
 // RequestJSON 发送 JSON 请求并反序列化响应。
 // 使用 context 控制超时和取消。
+// nil ctx 按 context.Background 处理（#101，与同文件 Publish 系列口径一致）。
 //
 // ⚠️ BREAKING（#88，0.x 阶段允许）：ctx 由第二位移至首位，与 Request 及
 // Go「ctx 首参」惯例对齐——旧形态 RequestJSON[Req, Resp](c, ctx, ...) 与
@@ -350,7 +364,7 @@ func RequestJSON[Req, Resp any](ctx context.Context, c *Client, subject string, 
 		return nil, fmt.Errorf("nats: marshal request: %w", err)
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+	ctx, cancel := context.WithTimeout(ensureCtx(ctx), timeout)
 	defer cancel()
 	resp, err := c.conn.RequestWithContext(ctx, subject, data)
 	if err != nil {

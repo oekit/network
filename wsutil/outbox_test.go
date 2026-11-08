@@ -1,6 +1,7 @@
 package wsutil
 
 import (
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -302,12 +303,18 @@ func TestOutbox_WriteFailureCountsLostFrames(t *testing.T) {
 	close(gate) // 5 帧已入队 ⇒ 放行，让这次写失败
 
 	o.Wait()
-	// 5 帧发出：1 帧被写协程取走（写失败），剩下 4 帧随队列消失 ⇒ 记账 4。
-	if got := o.Dropped(); got != 4 {
-		t.Errorf("Dropped = %d, want 4 (the 4 frames left in the queue)", got)
+	// 5 帧发出（Send 返回 true ×5）：1 帧被写协程取走（写失败，#105 起
+	// 同样记账），剩下 4 帧随队列消失 ⇒ Dropped = 1 + 4 = 5。
+	// 「Send(true) − Written」必须恒等于 Dropped——计数闭合。
+	if got := o.Dropped(); got != 5 {
+		t.Errorf("Dropped = %d, want 5 (1 in-flight failed frame + 4 left in the queue, #105)", got)
 	}
 	if o.Written() != 0 {
 		t.Errorf("Written = %d, want 0 (the write failed)", o.Written())
+	}
+	if got := 5 - o.Written(); got != o.Dropped() {
+		t.Errorf("Send-true(5) − Written(%d) = %d ≠ Dropped(%d) — the accounting must close (#105)",
+			o.Written(), got, o.Dropped())
 	}
 }
 
@@ -349,5 +356,117 @@ func TestOutbox_DoneDoesNotMeanDrained(t *testing.T) {
 	// Done 已经响了，但写还卡着 ⇒ 帧还没冲刷出去。
 	if o.Written() != 0 {
 		t.Errorf("Written = %d while the write is still blocked, want 0", o.Written())
+	}
+}
+
+// TestOutbox_WriteFailureClosesTheAccounting 回归（#105）：「Send 返回 true
+// 的帧」必须闭合进 Written 或 Dropped 之一。issue 复现形态：3 帧 Send 全部
+// true；第一次写被 gate 挡住并最终失败 ⇒ Written=0；队列剩 2 帧随队列记账；
+// **正在写、写失败的那一帧**同样要记账——旧的实现两头都不记 ⇒
+// Send(true)−Written=3 而 Dropped=2，差值公式差 1。
+func TestOutbox_WriteFailureClosesTheAccounting(t *testing.T) {
+	gate := make(chan struct{})
+	o := NewOutbox(func(msg []byte) error {
+		<-gate // 第一次写挂到测试放行为止
+		return errors.New("the socket is gone")
+	}, OutboxOptions{QueueSize: 8})
+	defer o.Close()
+
+	sentTrue := 0
+	for i := 0; i < 3; i++ {
+		if o.Send([]byte("x")) {
+			sentTrue++
+		}
+	}
+	if sentTrue != 3 {
+		t.Fatalf("Send returned true %d times, want 3", sentTrue)
+	}
+	close(gate) // 放行：这次写失败 ⇒ 写协程 Close + 记账后退出
+	o.Wait()
+
+	if o.Written() != 0 {
+		t.Errorf("Written = %d, want 0", o.Written())
+	}
+	if got := o.Dropped(); got != 3 {
+		t.Errorf("Dropped = %d, want 3 (1 in-flight failed + 2 left in the queue, #105)", got)
+	}
+	if diff := int64(sentTrue) - o.Written(); diff != o.Dropped() {
+		t.Errorf("Send-true(%d) − Written(%d) = %d ≠ Dropped(%d) — the documented formula must hold (#105)",
+			sentTrue, o.Written(), diff, o.Dropped())
+	}
+}
+
+// TestOutbox_DrainWriteFailureAlsoCountsInFlight 回归（#105）的冲刷路径：
+// Close 之后的 drain 写失败时，正在写的这一帧同样计入 Dropped。
+func TestOutbox_DrainWriteFailureAlsoCountsInFlight(t *testing.T) {
+	c := newCollector()
+	c.failAt = 1 // 第一帧成功、第二帧失败（冲刷队列里的最后一帧时失败）
+
+	taken := make(chan struct{})
+	gate := make(chan struct{})
+	o := NewOutbox(func(msg []byte) error {
+		select {
+		case <-taken:
+		default:
+			close(taken)
+		}
+		<-gate
+		return c.write(msg)
+	}, OutboxOptions{QueueSize: 8})
+
+	if !o.Send([]byte("a")) || !o.Send([]byte("b")) {
+		t.Fatal("Send refused")
+	}
+	<-taken     // 写协程已取走第一帧（挂在 gate 上）
+	o.Close()   // Close ⇒ 写协程走 drain 分支（先冲刷再退出）
+	close(gate) // 放行：第一帧成功、第二帧失败
+	o.Wait()
+
+	if got := o.Written(); got != 1 {
+		t.Errorf("Written = %d, want 1", got)
+	}
+	if got := o.Dropped(); got != 1 {
+		t.Errorf("Dropped = %d, want 1 (the in-flight frame that failed during drain, #105)", got)
+	}
+	if diff := int64(2) - o.Written(); diff != o.Dropped() {
+		t.Errorf("Send-true(2) − Written(%d) ≠ Dropped(%d) — the accounting must close (#105)",
+			o.Written(), o.Dropped())
+	}
+}
+
+// TestOutbox_SendFalseClosedVsFull 回归（#105）的语义面：Send 的两种 false
+// 必须可区分——管道已关（Closed()=true，帧没进队列、不计 Dropped）与
+// 队列满（Closed()=false，慢消费者）。文档示例把 false 一律当慢消费者断
+// 对端——管道已关时那样做是误伤。
+func TestOutbox_SendFalseClosedVsFull(t *testing.T) {
+	block := make(chan struct{})
+	defer close(block)
+	o := NewOutbox(func([]byte) error {
+		<-block // 一直挂着：队列不会被消费
+		return nil
+	}, OutboxOptions{QueueSize: 1})
+
+	// 队列满的 false：Closed() 必须仍为 false。
+	o.Send([]byte("1"))      // 占住队列
+	if o.Send([]byte("2")) { // 队列满 ⇒ false
+		t.Fatal("Send on a full queue returned true")
+	}
+	if o.Closed() {
+		t.Error("Closed = true on a full queue, want false (a slow consumer is not a closed pipe)")
+	}
+	if o.Dropped() != 1 {
+		t.Errorf("Dropped = %d, want 1 (queue-full rejection)", o.Dropped())
+	}
+
+	// 管道已关的 false：Closed() 必须为 true，且不计 Dropped。
+	o.Close()
+	if o.Send([]byte("3")) {
+		t.Fatal("Send after Close returned true")
+	}
+	if !o.Closed() {
+		t.Error("Closed = false after Close, want true (#105: the two false outcomes must be tellable apart)")
+	}
+	if o.Dropped() != 1 {
+		t.Errorf("Dropped = %d after a closed-pipe rejection, want 1 (a frame that never entered the queue is not a dropped frame)", o.Dropped())
 	}
 }

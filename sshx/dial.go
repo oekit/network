@@ -53,15 +53,25 @@ type DialOptions struct {
 	Connect time.Duration
 	// Handshake 界 SSH 握手。零值即 DefaultHandshakeTimeout。
 	Handshake time.Duration
-	// Budget 是调用方给这次调用的总预算，它同时压住上面两个界限：
-	// 给了两秒的调用方不该坐在一个五秒的握手里等一个自己不会用的结果。
+	// Budget 是调用方给这次调用的**总预算**（#106）：锚定在 Dial 入口，
+	// 压住的是「连接 + 握手」的**总和**——连接阶段花掉的每一毫秒都从
+	// 预算里扣，握手窗口按剩余预算夹取。给了两秒的调用方不该坐在一个
+	// 五秒的握手里等一个自己不会用的结果，也不该等 2×预算。
 	Budget time.Duration
+
+	// dialFunc 覆盖 TCP 拨号（仅测试注入「连得上但慢」的连接用；零值即
+	// 带 Timeout 的 net.Dialer）。导出结构体上的非导出字段：不影响键控
+	// 字面量构造，生产路径不可见。
+	dialFunc func(ctx context.Context, timeout time.Duration, network, address string) (net.Conn, error)
 }
 
 // Dial 打开到 addr 的 SSH 连接。
 //
 // ctx 对连接阶段有效：放弃的调用方不会留下一个开着的 socket。握手由固定
-// 界限、调用方预算与 ctx 的截止时间三者中最小的那个界定。
+// 界限、调用方剩余预算与 ctx 剩余时间三者中最小的那个界定——三者都在
+// **拨号完成之后**求值（#106）：预算是总预算、锚定在 Dial 入口，ctx 的
+// 截止时间同样压住握手；连接阶段耗掉的 T 不会再让总耗时可接近 2×预算、
+// 或超出 ctx 截止时间约 T。
 // nil ctx 按 context.Background 处理（#79，与同仓 ratelimit.TokenBucket.WaitN /
 // syncx.Gate.Acquire / retry.DoValue 的兜底口径一致），不留给调用方一个
 // nil 解引用 panic。
@@ -80,6 +90,8 @@ func Dial(ctx context.Context, addr string, cc *ssh.ClientConfig, opts DialOptio
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	// 总预算锚定在 Dial 入口（#106）：从这里起算「这次调用花了多久」。
+	start := time.Now()
 	connect := opts.Connect
 	if connect <= 0 {
 		connect = DefaultConnectTimeout
@@ -88,24 +100,41 @@ func Dial(ctx context.Context, addr string, cc *ssh.ClientConfig, opts DialOptio
 	if handshake <= 0 {
 		handshake = DefaultHandshakeTimeout
 	}
-	// 调用方的预算压住连接与握手 alike。
+	// 预算先夹连接阶段：单是连接就不许花掉超过预算的时间。
+	// 握手窗口在拨号完成后按**剩余**预算与 ctx 剩余时间夹取（见下）。
 	if opts.Budget > 0 && opts.Budget < connect {
 		connect = opts.Budget
 	}
-	if opts.Budget > 0 && opts.Budget < handshake {
-		handshake = opts.Budget
+	dialFn := opts.dialFunc
+	if dialFn == nil {
+		dialFn = func(ctx context.Context, timeout time.Duration, network, address string) (net.Conn, error) {
+			return (&net.Dialer{Timeout: timeout}).DialContext(ctx, network, address)
+		}
 	}
-	// ctx 的截止时间同样压住握手：调用方已经放弃的调用，不该再等一个没人
-	// 会读的握手结果。
-	if deadline, ok := ctx.Deadline(); ok {
-		if remaining := time.Until(deadline); remaining > 0 && remaining < handshake {
+	conn, err := dialFn(ctx, connect, "tcp", addr)
+	if err != nil {
+		return nil, fmt.Errorf("dial %s: %w", addr, err)
+	}
+	// 握手窗口在**拨号完成之后**求值（#106）：旧的实现在拨号**前**就用
+	// 当时的剩余时间把握手窗口定死、又把窗口锚定在拨号完成时刻——连接
+	// 阶段耗掉 T 时，总耗时上界 ≈ T + min(握手, 预算, T0 时的剩余)，可
+	// 接近 2×预算、并可超出 ctx 截止时间约 T。现在按此刻的剩余夹取：
+	// 预算是总预算，ctx 的截止时间真正压住握手。
+	if opts.Budget > 0 {
+		if remaining := opts.Budget - time.Since(start); remaining < handshake {
 			handshake = remaining
 		}
 	}
-	dialer := net.Dialer{Timeout: connect}
-	conn, err := dialer.DialContext(ctx, "tcp", addr)
-	if err != nil {
-		return nil, fmt.Errorf("dial %s: %w", addr, err)
+	if deadline, ok := ctx.Deadline(); ok {
+		if remaining := time.Until(deadline); remaining < handshake {
+			handshake = remaining
+		}
+	}
+	if handshake <= 0 {
+		// 连接阶段已把预算/ctx 耗尽：立即放弃，不做一场没人会等结果的握手。
+		_ = conn.Close()
+		return nil, fmt.Errorf("dial %s: budget or context deadline exhausted after connect (took %s)",
+			addr, time.Since(start).Round(time.Millisecond))
 	}
 	// 截止时间必须设在 socket 上：那是唯一能从外面界住 x/crypto/ssh 握手
 	// 的地方。

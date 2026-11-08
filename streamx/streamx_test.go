@@ -3,6 +3,7 @@ package streamx
 import (
 	"context"
 	"errors"
+	"io"
 	"testing"
 	"time"
 )
@@ -35,10 +36,12 @@ type fakeSource struct {
 
 func (f *fakeSource) Next(_ context.Context) (Event, error) {
 	if f.closed {
-		return Event{}, ErrSinkClosed
+		// #104：源关闭的哨兵是 ErrSourceClosed（不再是 Sink 语义的
+		// ErrSinkClosed），耗尽是 io.EOF——按 Source 接口契约。
+		return Event{}, ErrSourceClosed
 	}
 	if f.idx >= len(f.events) {
-		return Event{}, ErrStreamExhausted
+		return Event{}, ErrStreamExhausted // = io.EOF（#104 别名）
 	}
 	ev := f.events[f.idx]
 	f.idx++
@@ -382,5 +385,90 @@ func TestSequenceToID(t *testing.T) {
 		if got := sequenceToID(c.seq); got != c.want {
 			t.Errorf("seq %d → %q, want %q", c.seq, got, c.want)
 		}
+	}
+}
+
+// TestSliceSource_ExhaustedIsIOEOF 回归（#104）：耗尽的哨兵必须是 io.EOF——
+// Source 接口契约两处写明「Next 返回 io.EOF 表示源耗尽」,按 `err == io.EOF`
+// 写的消费方必须拿得到终止信号。ErrStreamExhausted 保留为 io.EOF 的别名,
+// 既有 `errors.Is(err, ErrStreamExhausted)` 调用方不受影响。
+func TestSliceSource_ExhaustedIsIOEOF(t *testing.T) {
+	src := NewSliceSource([]Event{{Data: "only"}})
+	defer src.Close()
+
+	ctx := context.Background()
+	if _, err := src.Next(ctx); err != nil {
+		t.Fatalf("Next: %v", err)
+	}
+	_, err := src.Next(ctx)
+	if !errors.Is(err, io.EOF) {
+		t.Errorf("exhausted err = %v, want io.EOF (#104: the interface contract says so)", err)
+	}
+	if !errors.Is(err, ErrStreamExhausted) {
+		t.Errorf("exhausted err = %v, want ErrStreamExhausted (kept as the io.EOF alias)", err)
+	}
+}
+
+// TestSliceSource_ClosedReturnsErrSourceClosed 回归（#104）的另一面：Close
+// 之后 Next 返回 **Source** 语义的 ErrSourceClosed,不再复用 Sink 的
+// ErrSinkClosed——Hub 靠 errors.Is(err, ErrSinkClosed) 区分「源正常收尾」
+// 与「源坏了」,源关闭抛 Sink 的错误会被 Hub 判成源故障。
+func TestSliceSource_ClosedReturnsErrSourceClosed(t *testing.T) {
+	src := NewSliceSource([]Event{{Data: "a"}})
+	if err := src.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	// 关闭幂等：重复 Close 不 panic、返回 nil。
+	if err := src.Close(); err != nil {
+		t.Errorf("second Close = %v, want nil (Close must be idempotent)", err)
+	}
+
+	_, err := src.Next(context.Background())
+	if !errors.Is(err, ErrSourceClosed) {
+		t.Errorf("closed err = %v, want ErrSourceClosed (#104)", err)
+	}
+	if errors.Is(err, ErrSinkClosed) {
+		t.Errorf("closed err = %v must NOT be ErrSinkClosed (#104: sink semantics leaking into source)", err)
+	}
+	if errors.Is(err, io.EOF) {
+		t.Errorf("closed err = %v must NOT be io.EOF (closed and exhausted are distinct normal endings)", err)
+	}
+}
+
+// TestHub_SliceSourceCloseIsNormalEnding 回归（#104）的 Hub 侧：源在 Run
+// 途中被正常关闭属于正常收尾——Hub 不把它当源故障（不再因 ErrSinkClosed
+// 串线），已转发的事件不丢、Run 正常返回。
+func TestHub_SliceSourceCloseIsNormalEnding(t *testing.T) {
+	src := NewSliceSource([]Event{{Data: "a"}, {Data: "b"}})
+	sink := &chanSink{events: make(chan Event, 2)}
+	h := NewHub()
+	h.AttachSource(src)
+	h.AttachSink(sink)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runErr := make(chan error, 1)
+	go func() { runErr <- h.Run(ctx) }()
+
+	// 第一条事件同步到达后关闭源：拉取 goroutine 以 ErrSourceClosed 退出
+	// （正常收尾——#104 之前这条哨兵是 Sink 语义的 ErrSinkClosed，
+	// Hub 把「源正常关闭」判成了源故障）。
+	select {
+	case ev := <-sink.events:
+		if ev.Data != "a" {
+			t.Fatalf("first event = %v, want %q", ev.Data, "a")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("first event never arrived")
+	}
+	_ = src.Close()
+
+	select {
+	case err := <-runErr:
+		if err != nil {
+			t.Errorf("Run after a source was closed normally = %v, want nil (normal ending, #104)", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return after the source was closed")
 	}
 }

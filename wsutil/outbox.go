@@ -91,7 +91,9 @@ func NewOutbox(write func([]byte) error, opts OutboxOptions) *Outbox {
 //		closePeer(p) // 慢消费者：断开这条连接
 //	}
 //
-// 关闭之后再 Send 返回 false，不会 panic。
+// 关闭之后再 Send 返回 false，不会 panic。两种 false 可区分（#105）：
+// 管道已关（ob.Closed() 为 true——帧根本没进队列，不算丢帧）与队列满
+// （Closed() 为 false——慢消费者，按文档示例处置对端）。
 //
 // ⚠️ **帧会被拷贝一份**。写协程是**稍后**才写它的，而调用方很可能复用
 // 同一个 buffer（buf = buf[:0] 后重新填）——不拷贝的话，上线的是调用方改过
@@ -162,10 +164,13 @@ func (o *Outbox) Wait() {
 
 // Dropped 是**没有写出去**的帧数。
 //
-// 两种情形都算：队列满时拒收的帧，以及写失败后随队列一起消失的帧。
+// 三种情形都算（#105 闭合口径）：队列满时拒收的帧、正在写但写失败的那一帧、
+// 以及写失败后随队列一起消失的帧。Send 返回 true 的每一帧都必然闭合进
+// Written 或 Dropped 之一——「Send(true) 次数 − Written」恒等于 Dropped。
+// （管道已关时的 Send 拒收不算：那一帧从未进过队列，Send 返回的是 false。）
 //
-// 它非零说明有客户端读得比服务端推得快——那是**该去看的东西**：要么客户端
-// 该自己慢点读，要么推送的频率该降。
+// 它非零说明有客户端读得比服务端推得快，或连接已经写不动了——那是**该去看
+// 的东西**：要么客户端该自己慢点读，要么推送的频率该降，要么连接该重连。
 func (o *Outbox) Dropped() int64 {
 	if o == nil {
 		return 0
@@ -175,13 +180,26 @@ func (o *Outbox) Dropped() int64 {
 
 // Written 是已经写到网络上的帧数。
 //
-// 拿它和「Send 返回 true 的次数」相减，就是没写出去的帧数——这条差值在写
-// 失败时才是唯一能看见的线索。
+// 拿它和「Send 返回 true 的次数」相减，就是没写出去的帧数（= Dropped）。
+// 这条差值在写失败时才是唯一能看见的线索。
 func (o *Outbox) Written() int64 {
 	if o == nil {
 		return 0
 	}
 	return o.written.Load()
+}
+
+// Closed 报告管道是否已关闭。
+//
+// 它拆开 Send 的两种 false（#105）：Send 返回 false 且 Closed() 为 true ⇒
+// 管道已关（那一帧没进队列，也不计入 Dropped）；Closed() 为 false ⇒ 队列满
+// （慢消费者，按 Send 文档的示例处置）。文档给的示例把 false 一律当慢消费
+// 者断对端——管道已关时那样做是误伤，先用这个分清楚。
+func (o *Outbox) Closed() bool {
+	if o == nil {
+		return false
+	}
+	return o.closed.Load()
 }
 
 // run 是写协程：队列的独家消费者。
@@ -193,10 +211,10 @@ func (o *Outbox) run() {
 		select {
 		case msg := <-o.queue:
 			if err := o.write(msg); err != nil {
-				// 先置 closed（不再接受新帧），再把队列里剩下的帧记账 ——
-				// 否则并发的 Send 还能往里塞，记账就不准了。
+				// 先置 closed（不再接受新帧），再记账 ——否则并发的 Send
+				// 还能往里塞，记账就不准了。
 				o.Close()
-				o.countPending()
+				o.failInFlight()
 				return
 			}
 			o.written.Add(1)
@@ -207,7 +225,19 @@ func (o *Outbox) run() {
 	}
 }
 
-// countPending 把队列里还没写出去的帧计入 lost。
+// failInFlight 把「正在写、写失败的那一帧」计入 Dropped（#105）。
+//
+// 那一帧 Send 返回过 true（=「进了队列」），调用方据此认为帧已交付；旧实现
+// 只把**队列剩下**的帧计入 Dropped，正在写的这一帧两头都不记 ⇒ 「Send(true)
+// 次数 − Written」比 Dropped 恒大 1，文档承诺的差值公式闭合不了。
+// 顺序必须是先置 closed 再 failInFlight + countPending：写失败 ⇒ 立刻关闭
+// （不再接受新帧）⇒ 然后才能把在途帧与剩余帧一次性记准。
+func (o *Outbox) failInFlight() {
+	o.dropped.Add(1)
+	o.countPending()
+}
+
+// countPending 把队列里还没写出去的帧计入 Dropped。
 //
 // 写失败时它们会**无声消失**：Send 已经返回过 true（=「进了队列」），而调用
 // 方据此认为帧已交付。不记账的话，丢了多少帧只有天知道。
@@ -230,7 +260,8 @@ func (o *Outbox) drain() {
 		select {
 		case msg := <-o.queue:
 			if err := o.write(msg); err != nil {
-				o.countPending()
+				// 冲刷阶段写失败的那一帧同样计入 Dropped（#105 同口径）。
+				o.failInFlight()
 				return
 			}
 			o.written.Add(1)
