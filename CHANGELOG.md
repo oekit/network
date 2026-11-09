@@ -1,5 +1,12 @@
 # Changelog — oekit/network
 
+## [v0.8.0] — 2026-11-10
+
+- - feat(nats): EnsureStream 声明式流装配——流名缺省派生/subjects 缺省/存储策略与容量上限常量单源（#122）
+- - fix(wsutil): Outbox 拆 Rejected 独立计数器，Send(true)−Written≡Dropped 恒等式在背压下成立（#123）
+
+关联问题单：network#122、network#123。
+
 ## [v0.7.14] — 2026-11-09
 
 - fix(sshx): 握手超时/拒绝类型化错误——errors.Is 可判别且措辞逐字兼容（#116）
