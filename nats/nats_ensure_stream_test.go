@@ -96,7 +96,8 @@ func TestJetStream_EnsureStream_ExplicitConfigWins(t *testing.T) {
 		MaxAge:    time.Hour,
 		MaxBytes:  64 << 20,
 	}
-	if _, err := js.EnsureStream(ctx, spec); err != nil {
+	_, err = js.EnsureStream(ctx, spec)
+	if err != nil {
 		t.Fatalf("EnsureStream: %v", err)
 	}
 	info, err := js.StreamInfo(ctx, "ORDERS")
@@ -132,13 +133,15 @@ func TestJetStream_EnsureStream_IdempotentThenUpdates(t *testing.T) {
 
 	spec := StreamSpec{Name: "PANEL_EVENTS", MaxAge: DefaultStreamMaxAge}
 	for i := 0; i < 2; i++ {
-		if _, err := js.EnsureStream(ctx, spec); err != nil {
+		_, err = js.EnsureStream(ctx, spec)
+		if err != nil {
 			t.Fatalf("EnsureStream (call %d, idempotent): %v", i+1, err)
 		}
 	}
 
 	// 更新语义：MaxAge 改短后再装配 ⇒ 服务端配置随之更新。
-	if _, err := js.EnsureStream(ctx, StreamSpec{Name: "PANEL_EVENTS", MaxAge: time.Hour}); err != nil {
+	_, err = js.EnsureStream(ctx, StreamSpec{Name: "PANEL_EVENTS", MaxAge: time.Hour})
+	if err != nil {
 		t.Fatalf("EnsureStream (update): %v", err)
 	}
 	info, err := js.StreamInfo(ctx, "PANEL_EVENTS")
@@ -164,12 +167,13 @@ func TestJetStream_EnsureStream_WorkQueueConflictRemediation(t *testing.T) {
 	defer cancel()
 
 	// 存量流：早年用 WorkQueue 策略建的业务流（fuxi 下游的真实冲突形态）。
-	if _, err := js.js.CreateStream(ctx, jetstream.StreamConfig{
+	_, err = js.js.CreateStream(ctx, jetstream.StreamConfig{
 		Name:      "LEGACY_WQ",
 		Subjects:  []string{"legacy.wq.>"},
 		Storage:   jetstream.FileStorage,
 		Retention: jetstream.WorkQueuePolicy,
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("seed workqueue stream: %v", err)
 	}
 
