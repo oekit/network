@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
+	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -13,6 +15,8 @@ import (
 // 使用新的 jetstream 包，提供持久化消息、至少一次投递保证、流和消费者管理。
 type JetStream struct {
 	js jetstream.JetStream
+	// clientName 是建链时 WithName 的值（可空）：EnsureStream 缺省流名的派生源（#122）。
+	clientName string
 }
 
 // NewJetStream 创建 JetStream v2 客户端。
@@ -21,7 +25,7 @@ func (c *Client) NewJetStream() (*JetStream, error) {
 	if err != nil {
 		return nil, fmt.Errorf("nats jetstream: %w", err)
 	}
-	return &JetStream{js: js}, nil
+	return &JetStream{js: js, clientName: c.opts.name}, nil
 }
 
 // CreateStream 创建流（如果不存在）。
@@ -47,6 +51,127 @@ func (js *JetStream) CreateStream(ctx context.Context, name string, subjects ...
 	}
 	log.Info("stream created", "name", name, "subjects", subjects)
 	return nil
+}
+
+// 家族缺省常量（#122）：fuxi 三仓 310 行近同手搓的 stream 装配缺省值在此
+// 单源化——某仓改 MaxAge 其余仓不跟随的漂移面就此收口。
+const (
+	// DefaultStreamMaxAge 是 EnsureStream 的缺省消息保留时长。
+	DefaultStreamMaxAge = 72 * time.Hour
+	// DefaultStreamMaxBytes 是 EnsureStream 的缺省流字节上限（512 MB）。
+	DefaultStreamMaxBytes = 512 << 20
+)
+
+// StreamSpec 是 EnsureStream 的声明式流规格（#122）。
+//
+// 零值字段一律取库缺省——消费方只写与缺省不同的字段；fuxi 三仓的近同手搓
+// （stream 名缺省、subjects 通配格式、Storage/Retention、MaxAge/MaxBytes）
+// 逐字段收敛到 StreamConfig 的映射规则见各字段文档。
+type StreamSpec struct {
+	// Name 流名。空值时从客户端名（WithName）派生：非字母数字折叠为 '_'、
+	// 统一大写、补 "_EVENTS" 后缀（fuxi-engine → FUXI_ENGINE_EVENTS，与
+	// 三仓既成缺省同形）。客户端也未设 WithName 时显式报错——流名是持久化
+	// 对象的主键，不静默兜底。
+	Name string
+	// Subjects 流的 subject 通配集。空值时取 Name+".>"（三仓一致的缺省形态）。
+	Subjects []string
+	// Storage 存储策略。零值取 FileStorage（三仓一致）。⚠ nats.go 的
+	// MemoryStorage 与零值同为 0、无法与「未设置」区分——内存流不是本原语
+	// 的目标场景，需要时直接用 CreateOrUpdateStream 传完整 StreamConfig。
+	Storage jetstream.StorageType
+	// Retention 保留策略。零值即 LimitsPolicy（与库缺省一致）；显式
+	// InterestPolicy / WorkQueuePolicy 直接生效。WorkQueue 存量流的不可原地
+	// 更新冲突见 EnsureStream 的处置文案。
+	Retention jetstream.RetentionPolicy
+	// MaxAge 消息保留时长。零值取 DefaultStreamMaxAge。
+	MaxAge time.Duration
+	// MaxBytes 流字节上限。零值取 DefaultStreamMaxBytes；服务器原生「0=不限」
+	// 的语义在本原语不可达（0 被解释为未设置），需要时用 CreateOrUpdateStream。
+	MaxBytes int64
+}
+
+// EnsureStream 声明式流装配（#122）：确保一条业务流按 StreamSpec 存在——
+// 不存在则创建，已存在则按 spec 原地更新（上游 CreateOrUpdateStream 语义）。
+//
+// 与 CreateStream 的关系：CreateStream 是「仅当不存在时创建」的窄原语（流已
+// 存在时不动配置、无缺省派生）；EnsureStream 是声明式组合口——缺省派生
+// （流名/subjects/Storage/Retention/MaxAge/MaxBytes，见 StreamSpec）+
+// CreateOrUpdateStream + 存量流冲突修复文案，fuxi 三仓 310 行近同手搓的装配
+// 知识在此单源。
+//
+// WorkQueue 存量冲突：服务端对存量流的若干维度不可原地变更（retention 到/
+// 从 workqueue、storage 类型变更、sealed 流等）。此类错误会附「需手动删除后
+// 重启」的修复文案——删除会丢弃未消费消息，先确认消费水位。新增/删除 subject
+// 对 WorkQueue 存量流同样受限（部分版本服务端直接拒绝），冲突时同样按文案处置。
+//
+// nil ctx 按 context.Background 处理（#101，与 JetStream 系列兜底口径一致）。
+func (js *JetStream) EnsureStream(ctx context.Context, spec StreamSpec) (jetstream.Stream, error) {
+	ctx = ensureCtx(ctx)
+
+	name := spec.Name
+	if name == "" {
+		if js.clientName == "" {
+			return nil, errors.New("nats: EnsureStream: 流名必填——StreamSpec.Name 为空且客户端未设 WithName，无从派生缺省流名")
+		}
+		name = derivedStreamName(js.clientName)
+	}
+	subjects := spec.Subjects
+	if len(subjects) == 0 {
+		subjects = []string{name + ".>"}
+	}
+
+	cfg := jetstream.StreamConfig{
+		Name:      name,
+		Subjects:  subjects,
+		Storage:   spec.Storage,
+		Retention: spec.Retention,
+		MaxAge:    spec.MaxAge,
+		MaxBytes:  spec.MaxBytes,
+	}
+	// 零值 = 家族缺省（#122）：缺省常量集中一处，语义见 StreamSpec 字段文档。
+	if cfg.Storage == 0 {
+		cfg.Storage = jetstream.FileStorage
+	}
+	if cfg.MaxAge <= 0 {
+		cfg.MaxAge = DefaultStreamMaxAge
+	}
+	if cfg.MaxBytes <= 0 {
+		cfg.MaxBytes = DefaultStreamMaxBytes
+	}
+
+	s, err := js.js.CreateOrUpdateStream(ctx, cfg)
+	if err != nil {
+		// 存量流冲突处置（#122，三仓各自的修复文案上移库层单源）：区分
+		// 「流存在但更新被拒」与「流不存在的创建失败」——前者是配置冲突
+		// （上游 CreateOrUpdateStream 的原地更新被服务端校验拒绝），补修复
+		// 文案；后者原样上抛，不掩盖真实故障。
+		if _, getErr := js.js.Stream(ctx, name); getErr == nil {
+			return nil, fmt.Errorf("nats: update stream %s: %w（存量流配置冲突，不可原地更新——常见于 retention 到/从 workqueue、storage 类型变更；需手动删除该流后重启，删除会丢弃未消费消息，先确认消费水位）", name, err)
+		}
+		return nil, fmt.Errorf("nats: create/update stream %s: %w", name, err)
+	}
+	log.Info("stream ensured", "name", name, "subjects", subjects)
+	return s, nil
+}
+
+// derivedStreamName 从客户端名（WithName）派生缺省流名（#122）：非字母数字
+// 折叠为 '_'、统一大写、补 "_EVENTS" 后缀，与三仓既成缺省（FUXI_ENGINE_EVENTS
+// 等）同形。
+func derivedStreamName(clientName string) string {
+	var b strings.Builder
+	b.Grow(len(clientName) + len("_EVENTS"))
+	for _, r := range clientName {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r - 32)
+		case (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9'):
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	b.WriteString("_EVENTS")
+	return b.String()
 }
 
 // Stream 获取流。
