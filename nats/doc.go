@@ -9,6 +9,8 @@
 //   - Request / Reply（同步 RPC 模式）
 //   - JSON 序列化/反序列化
 //   - 优雅关闭（drain）
+//   - JetStream：持久化消息 + 声明式流装配（EnsureStream，#122——流名/subjects/
+//     存储/容量缺省单源，CreateOrUpdateStream 语义 + 存量流冲突修复文案）
 //
 // # 使用方式
 //
