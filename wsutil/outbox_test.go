@@ -109,8 +109,12 @@ func TestOutbox_OverflowNeverBlocks(t *testing.T) {
 	if elapsed > 200*time.Millisecond {
 		t.Errorf("Send on a full queue blocked for %s", elapsed)
 	}
-	if o.Dropped() != 1 {
-		t.Errorf("Dropped = %d, want 1", o.Dropped())
+	// #123 拆分口径：队列满拒收计 Rejected（帧从未进队列），不计 Dropped。
+	if got := o.Rejected(); got != 1 {
+		t.Errorf("Rejected = %d, want 1 (queue-full rejection)", got)
+	}
+	if got := o.Dropped(); got != 0 {
+		t.Errorf("Dropped = %d, want 0 (a refused frame never entered the queue, #123)", got)
 	}
 }
 
@@ -146,8 +150,11 @@ func TestOutbox_OverflowOnlyReports(t *testing.T) {
 	if o.Send([]byte("3")) {
 		t.Error("a full queue must refuse the frame")
 	}
-	if o.Dropped() != 1 {
-		t.Errorf("Dropped = %d, want 1", o.Dropped())
+	if got := o.Rejected(); got != 1 {
+		t.Errorf("Rejected = %d, want 1 (queue-full rejection, #123)", got)
+	}
+	if got := o.Dropped(); got != 0 {
+		t.Errorf("Dropped = %d, want 0 (a refused frame never entered the queue, #123)", got)
 	}
 	// 关键：它没有被处置——管道还活着，调用方自己决定怎么办。
 	select {
@@ -448,7 +455,7 @@ func TestOutbox_SendFalseClosedVsFull(t *testing.T) {
 		return nil
 	}, OutboxOptions{QueueSize: 1})
 
-	// 队列满的 false：Closed() 必须仍为 false。
+	// 队列满的 false：Closed() 必须仍为 false，拒收计 Rejected（#123）。
 	o.Send([]byte("1"))      // 占住队列
 	if o.Send([]byte("2")) { // 队列满 ⇒ false
 		t.Fatal("Send on a full queue returned true")
@@ -456,11 +463,14 @@ func TestOutbox_SendFalseClosedVsFull(t *testing.T) {
 	if o.Closed() {
 		t.Error("Closed = true on a full queue, want false (a slow consumer is not a closed pipe)")
 	}
-	if o.Dropped() != 1 {
-		t.Errorf("Dropped = %d, want 1 (queue-full rejection)", o.Dropped())
+	if got := o.Rejected(); got != 1 {
+		t.Errorf("Rejected = %d, want 1 (queue-full rejection)", got)
+	}
+	if got := o.Dropped(); got != 0 {
+		t.Errorf("Dropped = %d, want 0 (a refused frame never entered the queue, #123)", got)
 	}
 
-	// 管道已关的 false：Closed() 必须为 true，且不计 Dropped。
+	// 管道已关的 false：Closed() 必须为 true，且不计 Dropped/Rejected。
 	o.Close()
 	if o.Send([]byte("3")) {
 		t.Fatal("Send after Close returned true")
@@ -468,8 +478,79 @@ func TestOutbox_SendFalseClosedVsFull(t *testing.T) {
 	if !o.Closed() {
 		t.Error("Closed = false after Close, want true (#105: the two false outcomes must be tellable apart)")
 	}
-	if o.Dropped() != 1 {
-		t.Errorf("Dropped = %d after a closed-pipe rejection, want 1 (a frame that never entered the queue is not a dropped frame)", o.Dropped())
+	if got := o.Rejected(); got != 1 {
+		t.Errorf("Rejected = %d after a closed-pipe rejection, want 1 (a frame that never entered the queue is not a rejected frame)", got)
+	}
+	if got := o.Dropped(); got != 0 {
+		t.Errorf("Dropped = %d after a closed-pipe rejection, want 0 (a frame that never entered the queue is not a dropped frame)", got)
+	}
+}
+
+// TestOutbox_IdentityHoldsUnderBackpressure 回归（#123）：Dropped 的恒等式
+// 「Send(true) 次数 − Written ≡ Dropped」必须在**发生过队列满拒收**的管道上
+// 依然成立，且拒收数独立可见（Rejected）。
+//
+// 旧实现把「队列满拒收」也计入 Dropped——拒收帧从未进过队列（Send 返回
+// false），混记使恒等式在任何发生过背压的进程上必假：消费方照注释用
+// 「Send(true)−Written」检测写失败丢帧，拿到的是「写失败 + 背压拒收」的混合
+// 数，无法区分慢消费与写失败（issue 实测：sendTrue=14779 written=14779
+// dropped=272216 → 差值 0 ≢ Dropped）。
+//
+// 时序（全部用 channel 同步，无 sleep，-race 稳定）：
+//  1. QueueSize=1，帧 1 入队后等写协程取走（在途、挂 release 上）⇒ 队列空；
+//  2. 帧 2 入队（占满唯一的槽位），帧 3/4/5 全部队列满拒收 ⇒ Rejected = 3；
+//  3. 放行 ⇒ 帧 1 写失败 ⇒ 写协程 Close + 记账（在途 1 帧 + 队列剩帧 2）
+//     后退出 ⇒ Dropped = 2，Written = 0；
+//  4. 断言：Send(true)=2，2 − 0 ≡ Dropped=2；Rejected=3 独立可见。
+func TestOutbox_IdentityHoldsUnderBackpressure(t *testing.T) {
+	taken := make(chan struct{}) // 写协程已把帧 1 从队列取走
+	release := make(chan struct{})
+	o := NewOutbox(func([]byte) error {
+		select {
+		case <-taken:
+		default:
+			close(taken)
+		}
+		<-release // 第一次写挂到测试放行为止
+		return errors.New("the socket is gone")
+	}, OutboxOptions{QueueSize: 1})
+	defer o.Close()
+
+	if !o.Send([]byte("1")) {
+		t.Fatal("Send refused frame 1 on an empty queue")
+	}
+	<-taken // 写协程已取走帧 1（挂在 release 上）⇒ 队列空
+	if !o.Send([]byte("2")) {
+		t.Fatal("Send refused frame 2 on an empty queue")
+	}
+
+	sentTrue := 0
+	for i := 0; i < 3; i++ { // 帧 3/4/5：队列被帧 2 占满 ⇒ 必然拒收
+		if o.Send([]byte("x")) {
+			sentTrue++
+		}
+	}
+	if got := o.Rejected(); got != 3 {
+		t.Fatalf("Rejected = %d, want 3 (frames 3-5 hit a full queue while frame 1 is stuck in-flight)", got)
+	}
+	sentTrue += 2 // 帧 1、帧 2 已被接受（上方 t.Fatal 把守）
+
+	close(release) // 放行：帧 1 写失败 ⇒ 写协程记账后退出
+	o.Wait()       // 写协程退场后计数静止（run 内先记账再退出）
+
+	if o.Written() != 0 {
+		t.Errorf("Written = %d, want 0 (the only attempted write failed)", o.Written())
+	}
+	if got := o.Dropped(); got != 2 {
+		t.Errorf("Dropped = %d, want 2 (frame 1 failed in-flight + frame 2 lost with the queue)", got)
+	}
+	// 恒等式（#123 的核心断言）：拒收不进 Dropped ⇒ 公式闭合。
+	if diff := int64(sentTrue) - o.Written(); diff != o.Dropped() {
+		t.Errorf("Send-true(%d) − Written(%d) = %d ≠ Dropped(%d) — the identity must hold even after backpressure (#123)",
+			sentTrue, o.Written(), diff, o.Dropped())
+	}
+	if n := len(o.queue); n != 0 {
+		t.Errorf("%d frame(s) left in the queue after Wait", n)
 	}
 }
 

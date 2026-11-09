@@ -70,8 +70,14 @@ type Outbox struct {
 
 	closeOnce sync.Once
 	closed    atomic.Bool
-	dropped   atomic.Int64
-	written   atomic.Int64
+	// dropped 计「Send 返回 true（已进队列）、但没有写出去」的帧（#123 拆分后
+	// 的口径：写失败的那一帧 + 随写失败消失的队列帧）。
+	// rejected 计「队列满拒收」的帧——它们**从未进过队列**，Send 返回 false。
+	// 两者此前混在 dropped 一个计数器里，使「Send(true) − Written ≡ Dropped」
+	// 的恒等式在任何发生过背压的进程上必假（#123），且无法区分慢消费与写失败。
+	dropped  atomic.Int64
+	rejected atomic.Int64
+	written  atomic.Int64
 }
 
 // OutboxOptions 是 NewOutbox 的可选项。
@@ -119,7 +125,7 @@ func NewOutbox(write func([]byte) error, opts OutboxOptions) *Outbox {
 //
 // 关闭之后再 Send 返回 false，不会 panic。两种 false 可区分（#105）：
 // 管道已关（ob.Closed() 为 true——帧根本没进队列，不算丢帧）与队列满
-// （Closed() 为 false——慢消费者，按文档示例处置对端）。
+// （Closed() 为 false——慢消费者，拒收计 Rejected（#123），按文档示例处置对端）。
 //
 // 「是否已关闭」的检查与入队是**同一个临界区**（#117）：返回 true 的帧
 // 必然已经在队列里，写协程的冲刷承诺（见 Close）对它成立——不存在
@@ -143,7 +149,7 @@ func (o *Outbox) Send(msg []byte) bool {
 	case o.queue <- cloneBytes(msg):
 		return true
 	default:
-		o.dropped.Add(1)
+		o.rejected.Add(1)
 		return false
 	}
 }
@@ -206,19 +212,23 @@ func (o *Outbox) Wait() {
 	o.wg.Wait()
 }
 
-// Dropped 是**没有写出去**的帧数。
+// Dropped 是「Send 返回 true（已进队列）、但没有写出去」的帧数（#123 拆分口径）。
 //
-// 三种情形都算（#105 闭合口径）：队列满时拒收的帧、正在写但写失败的那一帧、
-// 以及写失败后随队列一起消失的帧。Send 返回 true 的每一帧都必然闭合进
-// Written 或 Dropped 之一——「Send(true) 次数 − Written」恒等于 Dropped。
-// （管道已关时的 Send 拒收不算：那一帧从未进过队列，Send 返回的是 false。）
+// 两种情形都算（#105 闭合口径）：正在写但写失败的那一帧、以及写失败后随队列
+// 一起消失的帧（含 Close 后冲刷阶段的写失败）。Send 返回 true 的每一帧都必然
+// 闭合进 Written 或 Dropped 之一——「Send(true) 次数 − Written」恒等于 Dropped。
 //
 // 关闭瞬间同样闭合（#117）：Send 的检查与入队是同一临界区，不存在「检查
 // 通过了、帧却落在关闭之后」的交错——那类帧曾经两头都不记，公式差值恒增
 // 1 且无法归因。
 //
-// 它非零说明有客户端读得比服务端推得快，或连接已经写不动了——那是**该去看
-// 的东西**：要么客户端该自己慢点读，要么推送的频率该降，要么连接该重连。
+// ⚠ 旧口径把「队列满拒收」也混在本计数里，恒等式在任何发生过背压的进程上
+// 必假——消费方照「Send(true)−Written」检测写失败丢帧会拿到全然失真的数字，
+// 无法区分慢消费与写失败（#123）。拒收帧从未进过队列、Send 返回 false，不属
+// 于「丢了已收下的帧」，现由 [Outbox.Rejected] 单独计数。
+//
+// 它非零说明连接已经**写不动了**（写失败即关闭管道）——那是**该去看的东西**：
+// 检查写入端的超时与对端状态。慢消费（队列满）看 Rejected 而不是这里。
 func (o *Outbox) Dropped() int64 {
 	if o == nil {
 		return 0
@@ -226,9 +236,26 @@ func (o *Outbox) Dropped() int64 {
 	return o.dropped.Load()
 }
 
+// Rejected 是**队列满拒收**的帧数（#123）：Send 因队列满返回 false 的次数。
+//
+// 这些帧从未进过队列、调用方收到了 false 并被明示「没收下」，因此不计入
+// Dropped——旧的混记口径使「Send(true) − Written ≡ Dropped」恒等式失真，
+// 且让慢消费与写失败无法区分。管道已关时的拒收**不计**（帧同样没进队列，
+// 但那属于关闭语义，Closed() 可区分）。
+//
+// 它非零说明有客户端读得比服务端推得快——慢消费是该去看的东西：要么客户端
+// 该自己慢点读，要么推送的频率该降，要么按 Send 文档的示例处置对端。
+func (o *Outbox) Rejected() int64 {
+	if o == nil {
+		return 0
+	}
+	return o.rejected.Load()
+}
+
 // Written 是已经写到网络上的帧数。
 //
-// 拿它和「Send 返回 true 的次数」相减，就是没写出去的帧数（= Dropped）。
+// 拿它和「Send 返回 true 的次数」相减，就是没写出去的帧数（= Dropped，#123
+// 拆分口径后恒等式真正成立——队列满拒收另计在 Rejected，不进这个差值）。
 // 这条差值在写失败时才是唯一能看见的线索。
 func (o *Outbox) Written() int64 {
 	if o == nil {
@@ -240,9 +267,9 @@ func (o *Outbox) Written() int64 {
 // Closed 报告管道是否已关闭。
 //
 // 它拆开 Send 的两种 false（#105）：Send 返回 false 且 Closed() 为 true ⇒
-// 管道已关（那一帧没进队列，也不计入 Dropped）；Closed() 为 false ⇒ 队列满
-// （慢消费者，按 Send 文档的示例处置）。文档给的示例把 false 一律当慢消费
-// 者断对端——管道已关时那样做是误伤，先用这个分清楚。
+// 管道已关（那一帧没进队列，也不计入 Dropped/Rejected）；Closed() 为 false ⇒
+// 队列满（慢消费者，计 Rejected、按 Send 文档的示例处置）。文档给的示例把
+// false 一律当慢消费者断对端——管道已关时那样做是误伤，先用这个分清楚。
 func (o *Outbox) Closed() bool {
 	if o == nil {
 		return false
