@@ -25,7 +25,7 @@ WebSocket 广播。与 [httpx](https://github.com/oekit/httpx) 的区别：这�
 | `mq` | `github.com/oekit/network/mq` | 消息队列抽象 |
 | `nats` | `github.com/oekit/network/nats` | NATS 客户端（嵌入式测试友好）+ JetStream |
 | `peercred` | `github.com/oekit/network/peercred` | unix socket 对端凭据（`SO_PEERCRED` 取 uid）+ 受信判定 |
-| `sshx` | `github.com/oekit/network/sshx` | SSH 客户端原语：两段界限的拨号（连接/握手分开界，另受调用方总预算压住）、私钥加载与密钥类型识别、公钥类型识别、空闲连接保活 |
+| `sshx` | `github.com/oekit/network/sshx` | SSH 客户端原语：两段界限的拨号（连接/握手分开界，另受调用方总预算压住）、私钥加载与密钥类型识别、公钥类型识别、公钥**恰好一把**校验（多行 / 一行塞两把皆拒——把公钥串原样存库前先问「这里面只有**一把**吗」）、空闲连接保活 |
 | `streamx` | `github.com/oekit/network/streamx` | 流工具（事件、Hub、SSE sink） |
 | `wsutil` | `github.com/oekit/network/wsutil` | WebSocket 推送原语：房间广播器（背压安全，慢连接超时跳过不拖死循环）+ 单连接的有界出站管道 `Outbox`（保证唯一写者、慢消费者不阻塞发送方，满了只报告不处置）。两者都不依赖任何 websocket 库 |
 
@@ -88,6 +88,10 @@ client, err := sshx.Dial(ctx, "10.0.0.1:2222", &ssh.ClientConfig{
 - **密钥类型提前问**：`DetectKeyType` / `PublicKeyType` 回答「这个密钥是什么
   类型」。服务端常常接受并报告成功、客户端在登录时才拒绝它——两端判断不
   一致时，中间没有任何东西会说明原因；
+- **恰好一把**：`ParseSinglePublicKey` 回答「这里面**只有**一把能用的钥匙
+  吗」。多行、一行里塞两把（authorized_keys 语法把第二把吞成注释，但整行
+  原样存进堡垒机就是两把）都会被拒——要把公钥串**原样存进某个系统**时，
+  这才是该问的那个；
 - **保活**：`StartKeepAlive` 定期在连接上说句话，防止空闲连接被 NAT 或
   防火墙静默掐断（被静默掐断的连接不报错——认出它的是命令那一步）。
 
