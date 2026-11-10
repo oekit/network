@@ -70,11 +70,26 @@ type Broadcaster struct {
 	// waitTimeout 是单轮广播等待所有写完成的上界, NewBroadcaster 设默认值,
 	// 测试(同包)可调短
 	waitTimeout time.Duration
-	// writeMu 按 Conn 记录串行写锁（#87）：保证同一连接上任意时刻至多一个
-	// 在途 WriteMessage——websocket 连接并发写会导致帧交错损坏。条目不随
-	// Unregister 删除：在途写可以活得比房间成员身份久，若重注册时换新锁，
-	// 卡死的旧写会与新写放成并发（正是要防的帧损坏）。
-	writeMu sync.Map // map[Conn]*sync.Mutex
+	// writeMu 按 Conn 记录串行写锁条目（#87）：保证同一连接上任意时刻至多
+	// 一个在途 WriteMessage——websocket 连接并发写会导致帧交错损坏。
+	// 条目生命周期与 Conn 一致（#142）：写协程归还（releaseWriteLock）与
+	// Unregister 收尾处，在「无在途写协程窗口 且 conn 不属于任何房间」时
+	// 回收条目——否则映射持强引用把已断开的 Conn 连同读写缓冲一起钉死，
+	// 轮换型推送服务内存无上界。安全回收协议见 connWriteEntry。
+	writeMu map[Conn]*connWriteEntry // 受 b.mu 保护
+}
+
+// connWriteEntry 是一个 Conn 的串行写锁条目（#87）。
+//
+// users 计「已取到本条目、尚未归还」的写协程数（受 Broadcaster.mu 保护）。
+// 条目回收协议（#142）：users 归零且 conn 不属于任何房间时条目就地删除。
+// 这是**安全**的——users 归零即不存在任何持有者（含「已取条目、尚未
+// TryLock」的缝隙窗口），此刻删除后新写经 connWriteLock 建新条目，不会
+// 与旧写分裂成两把锁并发写坏帧（#87 的红线）；反之只要还有一个写协程
+// 窗口开着，条目就留在表里，重注册后的新写与在途旧写继续用同一把锁。
+type connWriteEntry struct {
+	mu    sync.Mutex
+	users int
 }
 
 // NewBroadcaster 创建并启动广播器。
@@ -86,6 +101,7 @@ func NewBroadcaster() *Broadcaster {
 		broadcast:   make(chan *broadcastMessage),
 		stop:        make(chan struct{}),
 		waitTimeout: defaultBroadcastWaitTimeout,
+		writeMu:     make(map[Conn]*connWriteEntry),
 	}
 	async.GoSafe(b.run)
 	return b
@@ -128,6 +144,11 @@ func (b *Broadcaster) handleUnregister(reg *registration) {
 			// 连接，避免单房间退出误杀其他房间的订阅
 			if !b.connInAnyRoomLocked(reg.conn) {
 				_ = reg.conn.Close()
+			}
+			// 回收写锁条目（#142）：此刻 conn 已不属任何房间；无在途写
+			// （users==0）立即可删，有则留待写协程归还时收尾（同一判据）。
+			if e, ok := b.writeMu[reg.conn]; ok {
+				b.reclaimWriteLockLocked(reg.conn, e)
 			}
 		}
 	}
@@ -181,13 +202,16 @@ func (b *Broadcaster) handleBroadcast(msg *broadcastMessage) {
 			// 撑过整轮 waitTimeout(> writeTimeout)。跳过本轮写并留痕（连接保留
 			// 在房间里：写恢复后下一轮照常投递；若物理连接已被对端/业务关闭，
 			// 卡死的写会以错误返回并触发下方的注销清理）。
-			mu := b.connWriteLock(conn)
-			if !mu.TryLock() {
+			// 条目使用窗口（#142）：取条目到归还之间条目不被回收——在途
+			// 旧写与重注册后的新写必然落在同一把锁上。
+			entry := b.connWriteLock(conn)
+			defer b.releaseWriteLock(conn, entry)
+			if !entry.mu.TryLock() {
 				wsLog.Warn("broadcast write skipped: previous write still in flight",
 					"room", msg.room)
 				return
 			}
-			defer mu.Unlock()
+			defer entry.mu.Unlock()
 			// 设置写超时，防止慢消费者阻塞(Conn 契约要求实现且必须生效;
 			// 若实现为 no-op,上方 TryLock 串行化兜底,不会并发写坏帧)
 			_ = conn.SetWriteDeadline(time.Now().Add(writeTimeout))
@@ -219,13 +243,38 @@ func (b *Broadcaster) handleBroadcast(msg *broadcastMessage) {
 	}
 }
 
-// connWriteLock 返回（或首次创建）conn 的串行写锁（#87）。
-func (b *Broadcaster) connWriteLock(conn Conn) *sync.Mutex {
-	v, ok := b.writeMu.Load(conn)
+// connWriteLock 返回（或首次创建）conn 的串行写锁条目（#87），并登记一个
+// 使用窗口（users++）：调用方用完必须 releaseWriteLock 归还，窗口内条目
+// 不会被回收（#142）。
+func (b *Broadcaster) connWriteLock(conn Conn) *connWriteEntry {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	e, ok := b.writeMu[conn]
 	if !ok {
-		v, _ = b.writeMu.LoadOrStore(conn, &sync.Mutex{})
+		e = &connWriteEntry{}
+		b.writeMu[conn] = e
 	}
-	return v.(*sync.Mutex)
+	e.users++
+	return e
+}
+
+// releaseWriteLock 归还 connWriteLock 登记的使用窗口，并在安全时回收条目（#142）。
+func (b *Broadcaster) releaseWriteLock(conn Conn, e *connWriteEntry) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	e.users--
+	b.reclaimWriteLockLocked(conn, e)
+}
+
+// reclaimWriteLockLocked 在「无使用窗口 且 conn 不属于任何房间」时回收
+// 条目（#142）。调用方需持 b.mu 写锁；条目已被新写替换时不动（恒等校验）。
+func (b *Broadcaster) reclaimWriteLockLocked(conn Conn, e *connWriteEntry) {
+	if e.users > 0 || b.connInAnyRoomLocked(conn) {
+		return
+	}
+	if cur, ok := b.writeMu[conn]; ok && cur == e {
+		delete(b.writeMu, conn)
+	}
 }
 
 // Register 将连接加入指定房间。
@@ -333,4 +382,7 @@ func (b *Broadcaster) Close() {
 		}
 		delete(b.rooms, room)
 	}
+	// 一并丢弃写锁条目（#142）：广播器关闭后不再有新写，残留条目只会
+	// 钉住 Conn；在途写的 releaseWriteLock 对已移除条目幂等（恒等校验）。
+	clear(b.writeMu)
 }

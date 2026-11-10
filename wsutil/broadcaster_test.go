@@ -422,12 +422,14 @@ func TestBroadcaster_NoConcurrentWritesToSameConn(t *testing.T) {
 		t.Fatalf("room count = %d, want 2 (skipped conn must stay registered)", got)
 	}
 
-	// 放行第一笔写：等串行写锁确实释放（同包直接探测），第三轮广播
-	// 恢复对 stuck 的投递——跳过是暂时的，不是永久驱逐。
+	// 放行第一笔写：等串行写锁确实释放（同包直接探测，按 connWriteLock
+	// 的窗口协议取/还），第三轮广播恢复对 stuck 的投递——跳过是暂时的，
+	// 不是永久驱逐。
 	close(stuck.release)
-	lock := b.connWriteLock(stuck)
-	waitFor(t, "stuck write lock released", func() bool { return lock.TryLock() })
-	lock.Unlock()
+	entry := b.connWriteLock(stuck)
+	waitFor(t, "stuck write lock released", func() bool { return entry.mu.TryLock() })
+	entry.mu.Unlock()
+	b.releaseWriteLock(stuck, entry)
 
 	b.Broadcast("room", []byte("m3"))
 	waitFor(t, "fast conn receives m3", func() bool { return fast.writtenCount() == 3 })
@@ -436,5 +438,78 @@ func TestBroadcaster_NoConcurrentWritesToSameConn(t *testing.T) {
 	})
 	if got := stuck.maxSeen.Load(); got != 1 {
 		t.Fatalf("max concurrent in-flight writes = %d, want 1 (serialization must hold)", got)
+	}
+}
+
+// --- #142 回归：writeMu 锁条目生命周期与 Conn 一致 ---
+
+// writeMuEntries 返回当前写锁条目数（#142 泄漏计数断言专用）。
+func (b *Broadcaster) writeMuEntries() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return len(b.writeMu)
+}
+
+// TestBroadcaster_WriteLockEntryReclaimedOnUnregister 回归（#142）：
+// writeMu 条目随 Conn 断开回收——Unregister（最后一个房间）且写协程退出
+// 后条目必须被清。修复前条目永久留存（全文件无 Delete 路径），映射持
+// 强引用把已断开的 Conn 连同读写缓冲钉死，轮换型推送服务内存无上界。
+func TestBroadcaster_WriteLockEntryReclaimedOnUnregister(t *testing.T) {
+	b := NewBroadcaster()
+	defer b.Close()
+	conn := &mockConn{}
+	b.Register("room-a", conn)
+	b.Broadcast("room-a", []byte("m1"))
+	waitFor(t, "write delivered", func() bool { return conn.writtenCount() == 1 })
+
+	b.Unregister("room-a", conn)
+	waitFor(t, "room emptied", func() bool { return b.GetRoomCount("room-a") == 0 })
+	// 修复前条目数恒 1 → 此处超时 FAIL
+	waitFor(t, "write lock entry reclaimed", func() bool { return b.writeMuEntries() == 0 })
+}
+
+// TestBroadcaster_WriteLockEntryKeptWhileWriteInFlight 回归（#142 安全侧）：
+// 在途写窗口内条目**不得**回收——此刻回收后重注册的新写会建新锁，与
+// 卡住的旧写分裂成两把锁并发写同一 Conn（#87 的帧损坏回归）；写协程
+// 归还窗口后条目随之回收。安全回收协议两个方向都钉住。
+func TestBroadcaster_WriteLockEntryKeptWhileWriteInFlight(t *testing.T) {
+	b := NewBroadcaster()
+	defer b.Close()
+	conn := newGateConn()
+	b.Register("room-a", conn)
+	b.Broadcast("room-a", []byte("m1"))
+	<-conn.entered // 确定性：写已取到条目（users≥1）并持锁在途
+
+	b.Unregister("room-a", conn)
+	waitFor(t, "room emptied", func() bool { return b.GetRoomCount("room-a") == 0 })
+	// conn 已离房但写仍在途：条目必须留住（users>0），否则后续新写会
+	// 与这把在途锁分裂成两把锁
+	if got := b.writeMuEntries(); got != 1 {
+		t.Fatalf("writeMu entries during in-flight write = %d, want 1（在途写窗口内不得回收）", got)
+	}
+
+	close(conn.release)
+	// 修复前条目永不回收 → 此处超时 FAIL
+	waitFor(t, "entry reclaimed after writer exits", func() bool { return b.writeMuEntries() == 0 })
+}
+
+// TestBroadcaster_WriteLockEntriesBoundedUnderConnChurn 回归（#142 泄漏
+// 本体）：轮换型推送服务的常态是「注册→广播→断开」循环——条目数必须随
+// 断开清零、不随历史连接数线性增长（修复前每见过一个 Conn 永久多一条）。
+func TestBroadcaster_WriteLockEntriesBoundedUnderConnChurn(t *testing.T) {
+	b := NewBroadcaster()
+	defer b.Close()
+	for i := range 64 {
+		conn := &mockConn{}
+		b.Register("room", conn)
+		b.Broadcast("room", []byte("m"))
+		waitFor(t, "write delivered", func() bool { return conn.writtenCount() == 1 })
+		b.Unregister("room", conn)
+		waitFor(t, "conn reclaimed", func() bool {
+			return b.GetRoomCount("room") == 0 && b.writeMuEntries() == 0
+		})
+		if got := b.writeMuEntries(); got != 0 {
+			t.Fatalf("churn round %d: writeMu entries = %d, want 0（条目钉死历史 Conn = 内存无上界）", i, got)
+		}
 	}
 }

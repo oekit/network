@@ -65,6 +65,10 @@ type Sink interface {
 	// 客户端断开)。
 	Emit(ctx context.Context, ev Event) error
 	// Close 关闭 sink,后续 Emit 返回 ErrSinkClosed。
+	//
+	// 实现须保证「关闭检查 + 写入」原子(#144):Close 与 Emit 并发交错
+	// 时不得把事件写进已关底层流,交错后的 Emit 必须返回 ErrSinkClosed
+	// 而非底层流错误——同构修法见 SSESink 与 wsutil.Outbox(#117)。
 	Close() error
 }
 

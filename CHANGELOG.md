@@ -1,5 +1,21 @@
 # Changelog — oekit/network
 
+## [v0.10.0] — 2026-11-11
+
+- fix(streamx): SSESink.Emit 的关闭检查与 stream 写入原子化（#144）——#117 在 wsutil.Outbox 修掉的同构竞态换包复活：closed 检查与写入两步无 happens-before，Close 可插进中间，通过检查的 Emit 把事件写进已关 stream、返回底层 stream 错误而非 ErrSinkClosed（契约「Close 后 Emit 返回 ErrSinkClosed」被击穿，Hub 把正常关闭当 sink 故障留痕）。现照 #117 修法把两步纳入同一临界区（Emit 持 RLock、Close 持 Lock，Close 等在途 Emit 写完才关 stream——慢消费者在途写会推迟 Close 返回，契约明示），Sink 接口契约同步写明原子要求
+
+关联问题单：oekit/network#144。
+
+- fix(mq): MQClient.Close 改 Close(ctx) error（BREAKING）（#143）——门面此前把无 ctx 的 Close() error 写进契约，与 AGENTS.md「组件 Close 统一 Close(ctx) error」硬规则及同仓 nats.Client 实现三方分裂：实现者只能无界关停（#83/#86 事故形态，ctx 上界入口都没有）或放弃门面。现接口与全部实现统一 Close(ctx) error（Go 不支持同名重载，无参形态移除，调用点改 c.Close(context.Background())），Requester.Request/RequestJSON 的「ctx 截止与 timeout 谁压谁」同步写死：先到先生效（min 语义，context.WithTimeout 同款），timeout ≤ 0 不是「不限时」而是立即到期（同 sshx #106 的两截止源教训）
+
+关联问题单：oekit/network#143。
+
+- fix(wsutil): Broadcaster.writeMu 锁条目随 Conn 生命周期回收（#142）——条目此前无任何 Delete 路径，每见过一个 Conn 永久多一条 Conn→锁 强引用，断开的 websocket Conn 连同读写缓冲永远无法 GC，轮换型推送服务 RSS 随历史连接总数线性增长、永不回落。现按安全回收协议回收（无在途写协程窗口 且 conn 不属任何房间才删，users 计数盖住「取到条目、尚未加锁」的缝隙，恒等校验防换锁）：写协程归还与 Unregister 收尾两处收尾，#87 的同锁串行保证不受影响（在途窗口内条目必留）
+
+关联问题单：oekit/network#142。
+
+- 现代语言特性（贴合处落地）：clear（Broadcaster.Close 丢弃条目表）、for range int（churn 轮换回归）、errors.Join（并发 emit/close 错误聚合）、sync.Once（SSESink.Close 幂等——「仅首次返回结果」口径贴 nats.Close 先例，故用 Do + 局部结果而非 OnceValue 的结果缓存形态）
+
 ## [v0.9.2] — 2026-11-11
 
 - fix(nats): 订阅 handler 的 panic 就地收编——handler 跑在 nats.go 无 recover 的派发 goroutine（waitForMsgs 直接 mcb(m)）里，一条语义残缺消息的 panic 会穿透炸掉整个进程、连同其上全部订阅与在途请求一并消灭；现在 Subscribe/QueueSubscribe（覆盖 SubscribeJSON/QueueSubscribeJSON/Reply 全部漏斗）的 handler 调用点统一 panic 收编（Error 日志 + 该条消息丢弃留痕，与 wsutil「只死这条连接」同口径），订阅与进程存活（#145）
