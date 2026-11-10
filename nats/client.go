@@ -160,7 +160,8 @@ func (c *Client) Drain() error {
 // 的在途消息处理完），一个 handler 阻塞时排空会挂到库的 DrainTimeout（默认
 // 30s）甚至更久（#83/#86），关停随之无界。现在 ctx 到期仍未排空就放弃等待、
 // 回退 conn.Close() 强制关闭（连接关闭会让阻塞中的读/写尽快以错误收敛），
-// 关停有界。Drain 被拒绝启动（如连接已被网络侧关闭）视为已达目标态。
+// 关停有界。Drain 被拒绝启动、而连接已被强制关闭（网络侧关闭、或重连窗口里
+// 上游 Drain 自己关掉的）视为已达目标态，不算错误（#147）。
 //
 // 签名遵循矩阵硬规则「组件 Close 统一 Close(ctx) error + sync.Once 幂等」：
 // 仅首次调用执行关闭动作并返回其结果，后续调用直接返回 nil。
@@ -176,11 +177,20 @@ func (c *Client) Close(ctx context.Context) error {
 	var closeErr error
 	c.closeOnce.Do(func() {
 		if err := c.conn.Drain(); err != nil {
-			// Drain 拒绝启动（连接已关/正在重连）：回退强制关闭，确保连接
-			// 被释放。网络侧已关闭（ErrConnectionClosed）时目标态已达成，
-			// 不算错误。
+			// Drain 拒绝启动：回退强制关闭，确保连接被释放。以下三种错误都是
+			// 「上游已把连接强制关闭、目标态已达成」，按本方法口径不算错误：
+			//   - ErrConnectionClosed：连接已被网络侧关闭；
+			//   - ErrConnectionReconnecting：重连窗口里 Drain() 自己就调了
+			//     nc.Close() 再返回它（nats.go@v1.55.0/nats.go:6507-6510）——
+			//     连接已强制关闭、正是关停想要的结果，旧豁免只认
+			//     ErrConnectionClosed，把它误记成「drain: connection
+			//     reconnecting」虚假错误（#147）；
+			//   - ErrConnectionDraining：已在排空中（其它版本/竞态下幂等
+			//     Drain 的返回语义不同），目标态已在路上，防御性同列。
 			c.conn.Close()
-			if !errors.Is(err, nats.ErrConnectionClosed) {
+			if !errors.Is(err, nats.ErrConnectionClosed) &&
+				!errors.Is(err, nats.ErrConnectionReconnecting) &&
+				!errors.Is(err, nats.ErrConnectionDraining) {
 				closeErr = fmt.Errorf("nats: drain: %w", err)
 			}
 			return
@@ -270,10 +280,41 @@ func (c *Client) publishMsg(ctx context.Context, subject string, data []byte) er
 	return c.conn.PublishMsg(msg)
 }
 
+// safeMsgHandler 把用户 handler 的调用包进 panic 收编层（#145）。
+//
+// 为什么必须有：handler 跑在 nats.go 的内部派发 goroutine（waitForMsgs）里，
+// 上游 SDK 的派发循环直接 mcb(m)、没有任何 recover（nats.go@v1.55.0/nats.go
+// :3861，全文件的 recover 只用于 closeStatusListener）——用户 handler 一个
+// panic（外部不可信载荷反序列化成功但语义残缺、nil 解引用是最常见形态）就
+// 穿透到 goroutine 顶，整个进程连同其上所有订阅、所有在途请求一并消灭。
+// SubscribeJSON 连坏 JSON 都兜了底，唯独 handler 内 panic 没兜。
+//
+// 收编口径与 wsutil/outbox「写协程 panic 只许死这条连接，不许死整个进程」
+// 同源：panic 收编为 Error 日志 + 该条消息丢弃留痕，订阅与进程存活。
+//
+// 就地 recover 而非 async.GoSafe（另起 goroutine）：nats.go 对同一订阅的
+// 消息是**串行**派发的（waitForMsgs 单 goroutine 逐条 mcb(m)），换 goroutine
+// 会把串行语义变成并发——handler 里的非线程安全状态会从「安全」变「竞态」。
+// 禁止裸 go func 的约束（AGENTS.md）管的是启动 goroutine，这里不启动。
+func safeMsgHandler(subject string, handler func(*nats.Msg)) func(*nats.Msg) {
+	return func(m *nats.Msg) {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Error("handler panic recovered, message dropped",
+					"subject", subject, "panic", fmt.Sprintf("%v", r))
+			}
+		}()
+		handler(m)
+	}
+}
+
 // Subscribe 订阅主题，收到消息时调用 handler。
 // 返回 Subscription，调用 Unsubscribe() 取消订阅。
+//
+// handler 的 panic 被就地收编（#145）：记 Error 日志、丢弃该条消息，订阅与
+// 进程照常存活——外部不可信载荷引发的 panic 不得杀死整个进程。
 func (c *Client) Subscribe(subject string, handler func(*nats.Msg)) (*nats.Subscription, error) {
-	sub, err := c.conn.Subscribe(subject, handler)
+	sub, err := c.conn.Subscribe(subject, safeMsgHandler(subject, handler))
 	if err != nil {
 		return nil, fmt.Errorf("nats subscribe %s: %w", subject, err)
 	}
@@ -283,8 +324,10 @@ func (c *Client) Subscribe(subject string, handler func(*nats.Msg)) (*nats.Subsc
 
 // QueueSubscribe 订阅主题（队列模式），同一队列组内只有一个消费者收到消息。
 // 适用于负载均衡场景：多个服务实例订阅同一主题，消息只投递给其中一个。
+//
+// handler 的 panic 同样就地收编（#145，见 safeMsgHandler）。
 func (c *Client) QueueSubscribe(subject, queue string, handler func(*nats.Msg)) (*nats.Subscription, error) {
-	sub, err := c.conn.QueueSubscribe(subject, queue, handler)
+	sub, err := c.conn.QueueSubscribe(subject, queue, safeMsgHandler(subject, handler))
 	if err != nil {
 		return nil, fmt.Errorf("nats queue subscribe %s/%s: %w", subject, queue, err)
 	}

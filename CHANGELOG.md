@@ -1,5 +1,19 @@
 # Changelog — oekit/network
 
+## [Unreleased]
+
+- fix(nats): 订阅 handler 的 panic 就地收编——handler 跑在 nats.go 无 recover 的派发 goroutine（waitForMsgs 直接 mcb(m)）里，一条语义残缺消息的 panic 会穿透炸掉整个进程、连同其上全部订阅与在途请求一并消灭；现在 Subscribe/QueueSubscribe（覆盖 SubscribeJSON/QueueSubscribeJSON/Reply 全部漏斗）的 handler 调用点统一 panic 收编（Error 日志 + 该条消息丢弃留痕，与 wsutil「只死这条连接」同口径），订阅与进程存活（#145）
+
+关联问题单：oekit/network#145。
+
+- fix(wsutil): Outbox 写动作 panic 同样闭合记账——write panic 时旧实现整套记账与冲刷（failInFlight/countPending/drain）被跳过，「Send(true) − Written ≡ Dropped」恒等式破口、帧静默消失且 Dropped 恒为 0（#105/#117/#123 的口径只对 error 路径成立）；现在 write 调用点 panic 收编为 error 走既有失败分支（run 与 drain 两径同口径），写动作 panic 计入 Dropped（#146）
+
+关联问题单：oekit/network#146。
+
+- fix(nats): Close(ctx) 重连窗口内返回 nil——上游 Drain() 在连接重连中自己执行 nc.Close()（目标态已达成）却返回 ErrConnectionReconnecting，旧豁免只认 ErrConnectionClosed，把已关误记成 "drain: connection reconnecting" 虚假错误（上层关停误报告警/非零退出码/跳过清理）；现在 ErrConnectionReconnecting 与 ErrConnectionDraining 同列「目标态已达成」豁免（#147）
+
+关联问题单：oekit/network#147。
+
 ## [v0.9.1] — 2026-11-10
 
 - - build: 依赖地板对齐（floor sync，无代码变更）

@@ -18,6 +18,7 @@ package wsutil
 // hertz-contrib、乃至任何自定义传输都能用同一份。
 
 import (
+	"fmt"
 	"sync"
 	"sync/atomic"
 
@@ -215,8 +216,10 @@ func (o *Outbox) Wait() {
 // Dropped 是「Send 返回 true（已进队列）、但没有写出去」的帧数（#123 拆分口径）。
 //
 // 两种情形都算（#105 闭合口径）：正在写但写失败的那一帧、以及写失败后随队列
-// 一起消失的帧（含 Close 后冲刷阶段的写失败）。Send 返回 true 的每一帧都必然
-// 闭合进 Written 或 Dropped 之一——「Send(true) 次数 − Written」恒等于 Dropped。
+// 一起消失的帧（含 Close 后冲刷阶段的写失败）。写动作 **panic** 同样计入
+// Dropped（#146：panic 收编为 error 走既有失败分支，与写失败同口径）。
+// Send 返回 true 的每一帧都必然闭合进 Written 或 Dropped 之一——
+// 「Send(true) 次数 − Written」恒等于 Dropped。
 //
 // 关闭瞬间同样闭合（#117）：Send 的检查与入队是同一临界区，不存在「检查
 // 通过了、帧却落在关闭之后」的交错——那类帧曾经两头都不记，公式差值恒增
@@ -285,7 +288,7 @@ func (o *Outbox) run() {
 	for {
 		select {
 		case msg := <-o.queue:
-			if err := o.write(msg); err != nil {
+			if err := o.writeSafe(msg); err != nil {
 				// 先置 closed（不再接受新帧），再记账 ——否则并发的 Send
 				// 还能往里塞，记账就不准了。
 				o.Close()
@@ -298,6 +301,24 @@ func (o *Outbox) run() {
 			return
 		}
 	}
+}
+
+// writeSafe 执行写入动作并把 panic 收编为 error（#146）。
+//
+// write 一旦 **panic**（不是返回 error），旧实现里 GoSafe 收编后 failInFlight /
+// countPending / drain 的记账与冲刷全部被跳过：「Send(true) − Written ≡
+// Dropped」恒等式破口，帧静默消失且 Dropped 恒为 0——#105/#117/#123 三轮
+// 修复闭合的口径只对 error 路径成立，对 panic 路径仍假。收编为 error 后走
+// 既有失败分支，记账照常闭合：**写动作 panic 与写失败同口径，同样计入
+// Dropped**（run 与 drain 两径一致）。
+func (o *Outbox) writeSafe(msg []byte) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			wsLog.Error("write panic recovered, frame dropped", "panic", fmt.Sprintf("%v", r))
+			err = fmt.Errorf("wsutil: write panic: %v", r)
+		}
+	}()
+	return o.write(msg)
 }
 
 // failInFlight 把「正在写、写失败的那一帧」计入 Dropped（#105）。
@@ -339,7 +360,7 @@ func (o *Outbox) drain() {
 	for {
 		select {
 		case msg := <-o.queue:
-			if err := o.write(msg); err != nil {
+			if err := o.writeSafe(msg); err != nil {
 				// 冲刷阶段写失败的那一帧同样计入 Dropped（#105 同口径）。
 				o.failInFlight()
 				return
