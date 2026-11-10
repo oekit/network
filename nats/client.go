@@ -270,10 +270,41 @@ func (c *Client) publishMsg(ctx context.Context, subject string, data []byte) er
 	return c.conn.PublishMsg(msg)
 }
 
+// safeMsgHandler 把用户 handler 的调用包进 panic 收编层（#145）。
+//
+// 为什么必须有：handler 跑在 nats.go 的内部派发 goroutine（waitForMsgs）里，
+// 上游 SDK 的派发循环直接 mcb(m)、没有任何 recover（nats.go@v1.55.0/nats.go
+// :3861，全文件的 recover 只用于 closeStatusListener）——用户 handler 一个
+// panic（外部不可信载荷反序列化成功但语义残缺、nil 解引用是最常见形态）就
+// 穿透到 goroutine 顶，整个进程连同其上所有订阅、所有在途请求一并消灭。
+// SubscribeJSON 连坏 JSON 都兜了底，唯独 handler 内 panic 没兜。
+//
+// 收编口径与 wsutil/outbox「写协程 panic 只许死这条连接，不许死整个进程」
+// 同源：panic 收编为 Error 日志 + 该条消息丢弃留痕，订阅与进程存活。
+//
+// 就地 recover 而非 async.GoSafe（另起 goroutine）：nats.go 对同一订阅的
+// 消息是**串行**派发的（waitForMsgs 单 goroutine 逐条 mcb(m)），换 goroutine
+// 会把串行语义变成并发——handler 里的非线程安全状态会从「安全」变「竞态」。
+// 禁止裸 go func 的约束（AGENTS.md）管的是启动 goroutine，这里不启动。
+func safeMsgHandler(subject string, handler func(*nats.Msg)) func(*nats.Msg) {
+	return func(m *nats.Msg) {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Error("handler panic recovered, message dropped",
+					"subject", subject, "panic", fmt.Sprintf("%v", r))
+			}
+		}()
+		handler(m)
+	}
+}
+
 // Subscribe 订阅主题，收到消息时调用 handler。
 // 返回 Subscription，调用 Unsubscribe() 取消订阅。
+//
+// handler 的 panic 被就地收编（#145）：记 Error 日志、丢弃该条消息，订阅与
+// 进程照常存活——外部不可信载荷引发的 panic 不得杀死整个进程。
 func (c *Client) Subscribe(subject string, handler func(*nats.Msg)) (*nats.Subscription, error) {
-	sub, err := c.conn.Subscribe(subject, handler)
+	sub, err := c.conn.Subscribe(subject, safeMsgHandler(subject, handler))
 	if err != nil {
 		return nil, fmt.Errorf("nats subscribe %s: %w", subject, err)
 	}
@@ -283,8 +314,10 @@ func (c *Client) Subscribe(subject string, handler func(*nats.Msg)) (*nats.Subsc
 
 // QueueSubscribe 订阅主题（队列模式），同一队列组内只有一个消费者收到消息。
 // 适用于负载均衡场景：多个服务实例订阅同一主题，消息只投递给其中一个。
+//
+// handler 的 panic 同样就地收编（#145，见 safeMsgHandler）。
 func (c *Client) QueueSubscribe(subject, queue string, handler func(*nats.Msg)) (*nats.Subscription, error) {
-	sub, err := c.conn.QueueSubscribe(subject, queue, handler)
+	sub, err := c.conn.QueueSubscribe(subject, queue, safeMsgHandler(subject, handler))
 	if err != nil {
 		return nil, fmt.Errorf("nats queue subscribe %s/%s: %w", subject, queue, err)
 	}
