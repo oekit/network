@@ -165,7 +165,7 @@ func TestReply_HandlerPanicDoesNotKillProcess(t *testing.T) {
 	unsubscribeOnCleanup(t, sub)
 
 	// boom 请求：handler panic ⇒ 无应答（超时是预期的），进程必须活着。
-	if _, err := c.Request(context.Background(), "panic.rpc", []byte("boom"), 300*time.Millisecond); err == nil {
+	if _, boomReqErr := c.Request(context.Background(), "panic.rpc", []byte("boom"), 300*time.Millisecond); boomReqErr == nil {
 		t.Error("the panicking request unexpectedly got a reply")
 	}
 
