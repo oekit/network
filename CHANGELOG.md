@@ -16,7 +16,7 @@
 
 - 现代语言特性（贴合处落地）：clear（Broadcaster.Close 丢弃条目表）、for range int（churn 轮换回归）、errors.Join（并发 emit/close 错误聚合）、sync.Once（SSESink.Close 幂等——「仅首次返回结果」口径贴 nats.Close 先例，故用 Do + 局部结果而非 OnceValue 的结果缓存形态）
 
-## [v0.9.3] — 2026-11-11
+## [v0.10.1] — 2026-11-11
 
 - fix(sshx): ParseSinglePublicKey 兑现「恰好一把」——「一行塞两把」现在真拒（#151）——doc 承诺拒「一行里塞了两把」，但判据「rest 非空说明后面还有内容」是**不可达死代码**：x/crypto 的 rest 只指「第一行之后的余量」（单行输入恒为空），而 authorized_keys 语法把第一把之后的全部内容吞成**注释**（comment 字段）——「一行两把」被当「一把 + 注释」放行且 err=nil，仓内测试还把这一行为钉成「应当通过」，函数名/doc/实现三方互相矛盾。现判据为「**注释区任一字段起点还能解析出公钥即拒**」（strings.Fields 切注释、逐后缀 ssh.ParseAuthorizedKey）：第二把藏在注释中段（note ssh-…）同样命中，普通注释文本（人话、机器注记）解析不出公钥不误伤；「多行」与「一行两把」两种形态收敛同一哨兵 errMoreThanOneKey（errors.Is 可判），key_test「一行两把按语法算注释」子用例翻转为应当拒
 
