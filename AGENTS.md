@@ -1,7 +1,7 @@
 # AGENTS.md — oekit/network
 
-> 轻量网络客户端——WebSocket/NATS/MQ 抽象、连接与流工具
-> 当前版本：`v0.9.2` · module：`github.com/oekit/network` · org：[oekit = Open Easy Kit](https://oekit.github.io)
+> 轻量网络客户端——WebSocket/NATS/MQ 抽象、连接与流工具；v0.10.0 审计修复轮——SSESink Emit/Close 原子化（#144）、MQClient.Close 统一 Close(ctx) error（BREAKING，#143）、Broadcaster 写锁条目随 Conn 回收（#142）
+> 当前版本：`v0.10.0` · module：`github.com/oekit/network` · org：[oekit = Open Easy Kit](https://oekit.github.io)
 
 ## 本仓包含
 `conn/`、`mq/`、`nats/`、`peercred/`、`sshx/`、`streamx/`、`wsutil/`
