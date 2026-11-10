@@ -78,11 +78,13 @@ type mockMQClient struct {
 	mockPublisher
 	mockSubscriber
 	mockRequester
-	closed bool
+	closed   bool
+	closeCtx context.Context
 }
 
-func (m *mockMQClient) Close() error {
+func (m *mockMQClient) Close(ctx context.Context) error {
 	m.closed = true
+	m.closeCtx = ctx
 	return nil
 }
 
@@ -203,7 +205,7 @@ func TestRequester_RequestJSON(t *testing.T) {
 
 func TestMQClient_Close(t *testing.T) {
 	c := &mockMQClient{}
-	err := c.Close()
+	err := c.Close(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -242,7 +244,56 @@ func TestMQClient_FullWorkflow(t *testing.T) {
 	}
 
 	// Close
-	if err := c.Close(); err != nil {
+	if err := c.Close(context.Background()); err != nil {
 		t.Fatalf("close error: %v", err)
+	}
+}
+
+// --- #143 回归：门面 Close 必须带 ctx 上界入口 ---
+
+// ctxCloseClient 是「合规实现者」的形态（#143）：Close 带 ctx，可为关停
+// 设上界（Drain/flush 遇慢消费者时按 ctx 截止回退强制关闭）。
+//
+// 修复前 MQClient 把无 ctx 的 Close() error 写死进契约，此形态**编译不过**
+// （var _ MQClient 断言失败）——正是 issue 的失败场景：合规实现者被迫
+// fork 或放弃门面，门面反而约束出无界关停（#83/#86 事故形态）。
+type ctxCloseClient struct {
+	mockPublisher
+	mockSubscriber
+	mockRequester
+	gotCtx context.Context
+}
+
+func (c *ctxCloseClient) Close(ctx context.Context) error {
+	c.gotCtx = ctx
+	return nil
+}
+
+// TestMQClient_AcceptsContextBoundClose 钉住 #143：带 ctx 的 Close 能满足
+// MQClient（修复前编译失败），且 ctx 透传至关停动作（上界入口不能丢）。
+func TestMQClient_AcceptsContextBoundClose(t *testing.T) {
+	impl := &ctxCloseClient{}
+	var c MQClient = impl
+	want, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := c.Close(want); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if got := impl.gotCtx; got != want {
+		t.Errorf("Close ctx = %v, want %v（ctx 须原样透传，关停上界入口不能丢）", got, want)
+	}
+}
+
+// TestMockMQClient_CloseReceivesContext 钉住 mock 自身的形态与接口一致：
+// Close 带 ctx（修复前 mock 钉的是违规签名 Close() error，测试绿反而把
+// 错误契约固化进了套件）。
+func TestMockMQClient_CloseReceivesContext(t *testing.T) {
+	c := &mockMQClient{}
+	want := context.Background()
+	if err := c.Close(want); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if c.closeCtx != want {
+		t.Errorf("closeCtx = %v, want %v", c.closeCtx, want)
 	}
 }
