@@ -1,5 +1,9 @@
 # Changelog — oekit/network
 
+## [v0.8.1] — 2026-11-10
+
+- - build: 依赖地板对齐（floor sync，无代码变更）
+
 ## [v0.8.0] — 2026-11-10
 
 - - feat(nats): EnsureStream 声明式流装配——流名缺省派生/subjects 缺省/存储策略与容量上限常量单源（#122）
