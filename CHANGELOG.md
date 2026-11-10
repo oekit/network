@@ -1,5 +1,11 @@
 # Changelog — oekit/network
 
+## [Unreleased]
+
+- fix(sshx): ParseSinglePublicKey 兑现「恰好一把」，拒「一行塞两把」（#151）——doc 承诺拒两种输入，但第二种「一行里塞了两把」的防线（rest 非空）是不可达死代码：x/crypto 的 rest 是「第一行之后的余量」，单行输入恒为空、多行已被前一条判据拒掉 ⇒ 实际「一行塞两把」被放行，第二把被 authorized_keys 的 comment 字段吞下（doc 的推理「rest 非空说明后面还有内容」本身是错的），仓内测试还把该行为钉成应当通过。现判据换成「comment 里还藏着一把能解析的公钥」——第二把落进 comment 是语法必然，逐后缀试解析连「注释文字后跟第二把」也命中，判据用「能解析」而非类型前缀（ssh-/ecdsa-/sk-），注释里「ssh 跳板机」字样不误伤；rest 死代码与错误推理一并修掉，测试翻转为应当拒绝并补「普通注释放行」对照（不标 BREAKING：签名与既有合法输入行为不变，唯一变化是此前违背 doc/函数名承诺被放行的「一行塞两把」开始被拒，即收紧到既有契约；若存在依赖旧宽松行为——第二把被当 comment 吞掉——的调用方，会开始收到 error，此类调用方应按 BREAKING 对待）
+
+关联问题单：oekit/network#151。
+
 ## [v0.10.0] — 2026-11-11
 
 - fix(streamx): SSESink.Emit 的关闭检查与 stream 写入原子化（#144）——#117 在 wsutil.Outbox 修掉的同构竞态换包复活：closed 检查与写入两步无 happens-before，Close 可插进中间，通过检查的 Emit 把事件写进已关 stream、返回底层 stream 错误而非 ErrSinkClosed（契约「Close 后 Emit 返回 ErrSinkClosed」被击穿，Hub 把正常关闭当 sink 故障留痕）。现照 #117 修法把两步纳入同一临界区（Emit 持 RLock、Close 持 Lock，Close 等在途 Emit 写完才关 stream——慢消费者在途写会推迟 Close 返回，契约明示），Sink 接口契约同步写明原子要求

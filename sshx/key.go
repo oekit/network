@@ -119,8 +119,10 @@ func ParsePublicKey(publicKey string) (ssh.PublicKey, error) {
 //     于是「第一行 ed25519、第二行 rsa」会被判成 rsa——而调用方接下来通常
 //     是把**整个字符串**存下去，堡垒机存的是两把钥匙，且会安静地接受那把
 //     ed25519。**被检查的东西与被存下的东西不是同一个**，这类漏洞极难查。
-//   - **一行里塞了两把**：authorized_keys 是一行一把；rest 非空说明后面
-//     还有内容。
+//   - **一行里塞了两把**：authorized_keys 是一行一把；两把挤进一行时，
+//     第二把会落进 comment 的位置（comment 是自由文本，语法上与真正的
+//     注释不可分）。判据是「comment 里还藏着一把能解析的公钥」——解析
+//     得出，这一行实际存下的就不止一把。
 //
 // 说清它为什么比 ParsePublicKey 严：ParsePublicKey 回答的是「这里面有
 // 一把能用的钥匙吗」，本函数回答的是「这里面**只有**一把能用的钥匙吗」。
@@ -133,14 +135,34 @@ func ParseSinglePublicKey(publicKey string) (ssh.PublicKey, error) {
 	if strings.ContainsAny(trimmed, "\n\r") {
 		return nil, errors.New("the input holds more than one key")
 	}
-	pub, _, _, rest, err := ssh.ParseAuthorizedKey([]byte(trimmed))
+	pub, comment, _, _, err := ssh.ParseAuthorizedKey([]byte(trimmed))
 	if err != nil {
 		return nil, fmt.Errorf("parse public key: %w", err)
 	}
-	if len(strings.TrimSpace(string(rest))) > 0 {
+	// 一行塞两把时第二把落进 comment（authorized_keys 的 comment 是自由
+	// 文本）。判据是「comment 里还藏着一把能解析的公钥」：解析得出 ⇒ 这
+	// 一行实际存了不止一把，拒（#151：旧判据查 rest，而 x/crypto 的 rest
+	// 是「第一行之后的余量」，单行输入恒为空、多行已被上面拒掉 ⇒ 那条
+	// 防线是不可达死代码，「一行塞两把」被放了过去）。
+	if commentHoldsKey(comment) {
 		return nil, errors.New("the input holds more than one key")
 	}
 	return pub, nil
+}
+
+// commentHoldsKey 报告 comment 里是否还藏着一把能解析的 SSH 公钥。
+//
+// 逐个后缀试解析：第二把前面还夹着注释文字（「note ssh-ed25519 AAAA…」）
+// 时同样命中。判据用「能解析」而不是类型前缀（ssh-/ecdsa-/sk-）：注释
+// 里正常的「ssh 跳板机」这类字样不该被误伤。
+func commentHoldsKey(comment string) bool {
+	fields := strings.Fields(comment)
+	for i := range fields {
+		if _, _, _, _, err := ssh.ParseAuthorizedKey([]byte(strings.Join(fields[i:], " "))); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // PublicKeyType 报告一行 SSH 公钥的类型（"ssh-rsa" / "ssh-ed25519" /
