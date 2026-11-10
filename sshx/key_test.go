@@ -172,14 +172,26 @@ func TestParseSinglePublicKey(t *testing.T) {
 		}
 	})
 
-	t.Run("一行两把钥匙：第二把按语法算注释", func(t *testing.T) {
+	t.Run("一行塞两把：第二把落在 comment 位置也算两把（#151）", func(t *testing.T) {
 		// authorized_keys 的语法是「[options] type base64 [comment]」⇒ 一行里
-		// 第二个 type/base64 形状的东西是**注释**，不是第二把钥匙（语法上
-		// 分不出来）。这与「多行」不同：多行时每一行都算数，所以那条被拒。
-		//
-		// ⚠️ 堡垒机怎么存这一行没有实测过——本函数只保证「语法上是一把钥匙」。
-		if _, err := ParseSinglePublicKey(ed + " " + ed); err != nil {
-			t.Errorf("一行两把不该被拒（第二把按语法就是注释）：%v", err)
+		// 第二个 type/base64 形状的东西会落进 comment（comment 是自由文本）。
+		// 但这一行存进系统时存的就是两把钥匙——「恰好一把」的承诺必须拒掉它
+		// （#151：旧判据查 rest，而单行输入的 rest 恒为空，那条防线是不可达
+		// 的死代码，这一行被放了过去）。
+		if _, err := ParseSinglePublicKey(ed + " " + ed); err == nil {
+			t.Error("一行塞两把应当被拒")
+		}
+	})
+
+	t.Run("注释文字后跟第二把：同样算两把（#151）", func(t *testing.T) {
+		if _, err := ParseSinglePublicKey(ed + " note " + ed); err == nil {
+			t.Error("注释文字后藏着第二把也应当被拒")
+		}
+	})
+
+	t.Run("一把加普通注释：注释不是公钥就放行（#151 不误伤）", func(t *testing.T) {
+		if _, err := ParseSinglePublicKey(ed + " user@host"); err != nil {
+			t.Errorf("一把钥匙加普通注释应当通过：%v", err)
 		}
 	})
 
