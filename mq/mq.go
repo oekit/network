@@ -60,7 +60,7 @@ type MQClient interface {
 	// Close 关闭客户端连接。
 	//
 	// 签名遵循矩阵硬规则「组件 Close 统一 Close(ctx) error + sync.Once 幂等」
-	//（AGENTS.md）：ctx 是关停的**上界入口**——Drain/flush 遇慢消费者不得
+	// （AGENTS.md）：ctx 是关停的**上界入口**——Drain/flush 遇慢消费者不得
 	// 无界阻塞（#83/#86 的事故形态），ctx 到期须回退强制关闭（修法参照
 	// nats.Client.Close）；实现须幂等，重复 Close 返回 nil。
 	//
