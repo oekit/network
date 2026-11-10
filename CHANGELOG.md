@@ -10,6 +10,10 @@
 
 关联问题单：oekit/network#146。
 
+- fix(nats): Close(ctx) 重连窗口内返回 nil——上游 Drain() 在连接重连中自己执行 nc.Close()（目标态已达成）却返回 ErrConnectionReconnecting，旧豁免只认 ErrConnectionClosed，把已关误记成 "drain: connection reconnecting" 虚假错误（上层关停误报告警/非零退出码/跳过清理）；现在 ErrConnectionReconnecting 与 ErrConnectionDraining 同列「目标态已达成」豁免（#147）
+
+关联问题单：oekit/network#147。
+
 ## [v0.9.1] — 2026-11-10
 
 - - build: 依赖地板对齐（floor sync，无代码变更）

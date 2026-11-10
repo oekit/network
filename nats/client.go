@@ -160,7 +160,8 @@ func (c *Client) Drain() error {
 // 的在途消息处理完），一个 handler 阻塞时排空会挂到库的 DrainTimeout（默认
 // 30s）甚至更久（#83/#86），关停随之无界。现在 ctx 到期仍未排空就放弃等待、
 // 回退 conn.Close() 强制关闭（连接关闭会让阻塞中的读/写尽快以错误收敛），
-// 关停有界。Drain 被拒绝启动（如连接已被网络侧关闭）视为已达目标态。
+// 关停有界。Drain 被拒绝启动、而连接已被强制关闭（网络侧关闭、或重连窗口里
+// 上游 Drain 自己关掉的）视为已达目标态，不算错误（#147）。
 //
 // 签名遵循矩阵硬规则「组件 Close 统一 Close(ctx) error + sync.Once 幂等」：
 // 仅首次调用执行关闭动作并返回其结果，后续调用直接返回 nil。
@@ -176,11 +177,20 @@ func (c *Client) Close(ctx context.Context) error {
 	var closeErr error
 	c.closeOnce.Do(func() {
 		if err := c.conn.Drain(); err != nil {
-			// Drain 拒绝启动（连接已关/正在重连）：回退强制关闭，确保连接
-			// 被释放。网络侧已关闭（ErrConnectionClosed）时目标态已达成，
-			// 不算错误。
+			// Drain 拒绝启动：回退强制关闭，确保连接被释放。以下三种错误都是
+			// 「上游已把连接强制关闭、目标态已达成」，按本方法口径不算错误：
+			//   - ErrConnectionClosed：连接已被网络侧关闭；
+			//   - ErrConnectionReconnecting：重连窗口里 Drain() 自己就调了
+			//     nc.Close() 再返回它（nats.go@v1.55.0/nats.go:6507-6510）——
+			//     连接已强制关闭、正是关停想要的结果，旧豁免只认
+			//     ErrConnectionClosed，把它误记成「drain: connection
+			//     reconnecting」虚假错误（#147）；
+			//   - ErrConnectionDraining：已在排空中（其它版本/竞态下幂等
+			//     Drain 的返回语义不同），目标态已在路上，防御性同列。
 			c.conn.Close()
-			if !errors.Is(err, nats.ErrConnectionClosed) {
+			if !errors.Is(err, nats.ErrConnectionClosed) &&
+				!errors.Is(err, nats.ErrConnectionReconnecting) &&
+				!errors.Is(err, nats.ErrConnectionDraining) {
 				closeErr = fmt.Errorf("nats: drain: %w", err)
 			}
 			return
