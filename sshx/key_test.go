@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/pem"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -157,6 +158,17 @@ func TestParseSinglePublicKey(t *testing.T) {
 		t.Fatalf("signer: %v", err)
 	}
 	ed := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(signer.PublicKey())))
+	// 第二把**不同**的钥匙：同一把重复两遍的输入抓的是「多一把」而非
+	// 「这一把」，两把不同才钉住「数的是钥匙把数」。
+	_, key2, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate 2: %v", err)
+	}
+	signer2, err := ssh.NewSignerFromKey(key2)
+	if err != nil {
+		t.Fatalf("signer 2: %v", err)
+	}
+	ed2 := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(signer2.PublicKey())))
 
 	t.Run("一把钥匙", func(t *testing.T) {
 		if _, err := ParseSinglePublicKey(ed); err != nil {
@@ -172,20 +184,60 @@ func TestParseSinglePublicKey(t *testing.T) {
 		}
 	})
 
-	t.Run("一行两把钥匙：第二把按语法算注释", func(t *testing.T) {
-		// authorized_keys 的语法是「[options] type base64 [comment]」⇒ 一行里
-		// 第二个 type/base64 形状的东西是**注释**，不是第二把钥匙（语法上
-		// 分不出来）。这与「多行」不同：多行时每一行都算数，所以那条被拒。
-		//
-		// ⚠️ 堡垒机怎么存这一行没有实测过——本函数只保证「语法上是一把钥匙」。
-		if _, err := ParseSinglePublicKey(ed + " " + ed); err != nil {
-			t.Errorf("一行两把不该被拒（第二把按语法就是注释）：%v", err)
+	t.Run("一行两把：整行存出去就是两把", func(t *testing.T) {
+		// authorized_keys 的语法是「[options] type base64 [comment]」⇒ 语法
+		// 上第二把被吞成注释。但本函数回答的是「这里面**只有**一把能用的
+		// 钥匙吗」——调用方按这个答案把**整行**原样存进堡垒机/密钥库时，
+		// 存进去的是两把，且第二把被任何逐字段取钥匙的下游安静接受。
+		// core/network#151：旧判据靠 x/crypto 的 rest 非空，而 rest 是
+		// 「第一行之后的余量」——单行输入恒为空 ⇒ 死代码，一行两把曾被
+		// 仓内测试钉成「应当通过」。判据现改为「注释区任一字段起点还能
+		// 解析出公钥即拒」。
+		for _, line := range []string{ed + " " + ed, ed + " " + ed2} {
+			if _, err := ParseSinglePublicKey(line); err == nil {
+				t.Errorf("一行两把应当被拒（原样存出即两把）：%q", line)
+			}
+		}
+	})
+
+	t.Run("两把分隔任意注释文本", func(t *testing.T) {
+		// 第二把不紧跟第一把——中间垫任意词（含像密钥类型的前缀词）都改变
+		// 不了「这行有两把」的事实。
+		for _, mid := range []string{"user@host", "note", "ssh-key-alias"} {
+			line := ed + " " + mid + " " + ed2
+			if _, err := ParseSinglePublicKey(line); err == nil {
+				t.Errorf("两把钥匙夹 %q 注释应当被拒：%q", mid, line)
+			}
+		}
+	})
+
+	t.Run("单把带注释不误伤", func(t *testing.T) {
+		// 普通注释（人话、机器注记）是 authorized_keys 的合法内容，不得
+		// 被「第二把检测」误杀——注释区只有**解析得出公钥**才算第二把。
+		for _, comment := range []string{"user@host", "ops@bastion rotation-2026", "not a key"} {
+			line := ed + " " + comment
+			if _, err := ParseSinglePublicKey(line); err != nil {
+				t.Errorf("单把 + 注释 %q 不该被拒：%v", comment, err)
+			}
 		}
 	})
 
 	t.Run("空", func(t *testing.T) {
 		if _, err := ParseSinglePublicKey("   "); err == nil {
 			t.Error("空输入应当被拒")
+		}
+	})
+
+	t.Run("多行与一行两把同错误身份", func(t *testing.T) {
+		// 两种「不止一把」形态收敛到同一哨兵（errors.Is 可判），调用方
+		// 无需分辨形态即可上报「输入里有多把」。
+		_, err1 := ParseSinglePublicKey("garbage\n" + ed)
+		_, err2 := ParseSinglePublicKey(ed + " " + ed2)
+		if !errors.Is(err1, errMoreThanOneKey) {
+			t.Errorf("多行错误应可 errors.Is(errMoreThanOneKey)，得到 %v", err1)
+		}
+		if !errors.Is(err2, errMoreThanOneKey) {
+			t.Errorf("一行两把错误应可 errors.Is(errMoreThanOneKey)，得到 %v", err2)
 		}
 	})
 }

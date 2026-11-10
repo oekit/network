@@ -111,6 +111,11 @@ func ParsePublicKey(publicKey string) (ssh.PublicKey, error) {
 	return pub, nil
 }
 
+// errMoreThanOneKey 是「输入里不止一把钥匙」的统一拒斥哨兵：多行与
+// 「一行塞两把」两种形态都归到它（errors.Is 可判），调用方无需分辨形态
+// 即可上报「输入里有多把」。
+var errMoreThanOneKey = errors.New("the input holds more than one key")
+
 // ParseSinglePublicKey 解析**恰好一把** SSH 公钥。
 //
 // 它拒掉 ParsePublicKey 容忍的两种输入：
@@ -119,8 +124,13 @@ func ParsePublicKey(publicKey string) (ssh.PublicKey, error) {
 //     于是「第一行 ed25519、第二行 rsa」会被判成 rsa——而调用方接下来通常
 //     是把**整个字符串**存下去，堡垒机存的是两把钥匙，且会安静地接受那把
 //     ed25519。**被检查的东西与被存下的东西不是同一个**，这类漏洞极难查。
-//   - **一行里塞了两把**：authorized_keys 是一行一把；rest 非空说明后面
-//     还有内容。
+//   - **一行里塞了两把**：authorized_keys 的语法把第一把之后的全部内容吞成
+//     **注释**（x/crypto 的 comment 字段），且 x/crypto 的 rest 只指「第一行
+//     之后的余量」——单行输入的 rest 恒为空，旧判据「rest 非空」是不可达
+//     死代码（network#151）。判据现为：**注释区任一字段起点还能解析出公钥
+//     即拒**（strings.Fields 切注释、逐后缀 ssh.ParseAuthorizedKey）——注释
+//     区解析得出钥匙，就说明这行装着第二把；普通注释文本（人话、机器注记）
+//     解析不出公钥，不误伤。
 //
 // 说清它为什么比 ParsePublicKey 严：ParsePublicKey 回答的是「这里面有
 // 一把能用的钥匙吗」，本函数回答的是「这里面**只有**一把能用的钥匙吗」。
@@ -131,16 +141,34 @@ func ParseSinglePublicKey(publicKey string) (ssh.PublicKey, error) {
 		return nil, errors.New("the public key is empty")
 	}
 	if strings.ContainsAny(trimmed, "\n\r") {
-		return nil, errors.New("the input holds more than one key")
+		return nil, errMoreThanOneKey
 	}
-	pub, _, _, rest, err := ssh.ParseAuthorizedKey([]byte(trimmed))
+	pub, comment, _, _, err := ssh.ParseAuthorizedKey([]byte(trimmed))
 	if err != nil {
 		return nil, fmt.Errorf("parse public key: %w", err)
 	}
-	if len(strings.TrimSpace(string(rest))) > 0 {
-		return nil, errors.New("the input holds more than one key")
+	// 一行塞两把（network#151）：authorized_keys 语法把第二把吞进注释区，
+	// 逐字段后缀试解析——注释区任一起点解析出公钥即说明整行装着第二把。
+	// 只看注释开头不够（「note ssh-…」第二把藏在注释中段），所以是后缀
+	// 扫描而非单点判断。
+	if commentHoldsKey(comment) {
+		return nil, errMoreThanOneKey
 	}
 	return pub, nil
+}
+
+// commentHoldsKey 判断 authorized_keys 的注释区是否还藏着一把可解析的
+// 公钥（ParseSinglePublicKey 的「一行两把」判据，network#151）。
+// 空注释、纯文本注释都返回 false；注释里能还原出公钥即返回 true。
+func commentHoldsKey(comment string) bool {
+	fields := strings.Fields(comment)
+	// for range int（Go 1.22）：只用下标推进后缀起点，无循环变量值。
+	for start := range len(fields) {
+		if _, _, _, _, err := ssh.ParseAuthorizedKey([]byte(strings.Join(fields[start:], " "))); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // PublicKeyType 报告一行 SSH 公钥的类型（"ssh-rsa" / "ssh-ed25519" /
