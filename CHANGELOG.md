@@ -6,6 +6,10 @@
 
 关联问题单：oekit/network#145。
 
+- fix(wsutil): Outbox 写动作 panic 同样闭合记账——write panic 时旧实现整套记账与冲刷（failInFlight/countPending/drain）被跳过，「Send(true) − Written ≡ Dropped」恒等式破口、帧静默消失且 Dropped 恒为 0（#105/#117/#123 的口径只对 error 路径成立）；现在 write 调用点 panic 收编为 error 走既有失败分支（run 与 drain 两径同口径），写动作 panic 计入 Dropped（#146）
+
+关联问题单：oekit/network#146。
+
 ## [v0.9.1] — 2026-11-10
 
 - - build: 依赖地板对齐（floor sync，无代码变更）
