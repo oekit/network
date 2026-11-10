@@ -1,5 +1,11 @@
 # Changelog — oekit/network
 
+## [v0.9.0] — 2026-11-10
+
+- - feat(sshx): DialPolicy/DialWithPolicy 预算内按类重拨原语——预算跨尝试共享、拒绝默认不重拨（#125）
+
+关联问题单：network#125。
+
 ## [v0.8.1] — 2026-11-10
 
 - - build: 依赖地板对齐（floor sync，无代码变更）
