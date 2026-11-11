@@ -365,44 +365,43 @@ func (js *JetStream) StreamInfo(ctx context.Context, stream string) (*jetstream.
 	return s.Info(ctx)
 }
 
-// fetchWithContext 把 ctx 注入取消息阶段（#103）：上游是
-// jetstream.FetchContext(ctx)，取消息立即响应取消/到期。
-//
-// 上游禁止 FetchContext 与 FetchMaxWait 同用（均映射 ErrInvalidOption）——
-// 调用方显式给了 FetchMaxWait 时以显式超时为准回退无 ctx 形态（SDK 限制）；
-// 回退前复查 ctx：已取消/到期的 ctx 不回退，立即返回取消原因，不挂 30s。
-func fetchWithContext(ctx context.Context, cons jetstream.Consumer, batchSize int, opts ...jetstream.FetchOpt) (jetstream.MessageBatch, error) {
+// withFetchCtx 是 fetchWithContext/nextWithContext 的公共实现（#163，两份
+// 近似孪生收敛为单点）：ctx.Err 预检 → 注入 jetstream.FetchContext(ctx)
+// （#103：取消息立即响应取消/到期）→ 上游拒绝（FetchContext 与 FetchMaxWait
+// 同用映射 ErrInvalidOption，或 deadline 恰在注入判定后过期）时复查 ctx：
+// 已取消/到期立即返回取消原因，否则以调用方原始 opts 回退（显式超时为准，
+// SDK 限制）。opName 只用于错误文案（fetch/next）；执行体 run 闭包自带
+// consumer 与形态参数（Fetch 的 batchSize / Next）。
+func withFetchCtx[T any](ctx context.Context, opName string, opts []jetstream.FetchOpt, run func(opts ...jetstream.FetchOpt) (T, error)) (T, error) {
+	var zero T
 	if err := ctx.Err(); err != nil {
-		return nil, fmt.Errorf("nats: fetch cancelled: %w", err)
+		return zero, fmt.Errorf("nats: %s cancelled: %w", opName, err)
 	}
-	injected := append([]jetstream.FetchOpt{jetstream.FetchContext(ctx)}, opts...)
-	batch, err := cons.Fetch(batchSize, injected...)
+	res, err := run(append([]jetstream.FetchOpt{jetstream.FetchContext(ctx)}, opts...)...)
 	if errors.Is(err, jetstream.ErrInvalidOption) {
 		// FetchMaxWait 冲突（或 deadline 恰在注入判定后过期）：ctx 已取消/
 		// 到期则直接返回取消原因；否则回退调用方给的显式超时形态。
 		if cerr := ctx.Err(); cerr != nil {
-			return nil, fmt.Errorf("nats: fetch cancelled: %w", cerr)
+			return zero, fmt.Errorf("nats: %s cancelled: %w", opName, cerr)
 		}
-		return cons.Fetch(batchSize, opts...)
+		return run(opts...)
 	}
-	return batch, err
+	return res, err
+}
+
+// fetchWithContext 把 ctx 注入取消息阶段（#103）：上游是
+// jetstream.FetchContext(ctx)，取消息立即响应取消/到期。
+// 注入与 FetchMaxWait 回退逻辑见 withFetchCtx（#163 单点）。
+func fetchWithContext(ctx context.Context, cons jetstream.Consumer, batchSize int, opts ...jetstream.FetchOpt) (jetstream.MessageBatch, error) {
+	return withFetchCtx(ctx, "fetch", opts, func(fopts ...jetstream.FetchOpt) (jetstream.MessageBatch, error) {
+		return cons.Fetch(batchSize, fopts...)
+	})
 }
 
 // nextWithContext 同 fetchWithContext（#103）：单条形态，上游 Next 走同一
 // fetchWithOpts 路径，FetchContext/Next 冲突口径一致。
 func nextWithContext(ctx context.Context, cons jetstream.Consumer, opts ...jetstream.FetchOpt) (jetstream.Msg, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, fmt.Errorf("nats: next cancelled: %w", err)
-	}
-	injected := append([]jetstream.FetchOpt{jetstream.FetchContext(ctx)}, opts...)
-	msg, err := cons.Next(injected...)
-	if errors.Is(err, jetstream.ErrInvalidOption) {
-		if cerr := ctx.Err(); cerr != nil {
-			return nil, fmt.Errorf("nats: next cancelled: %w", cerr)
-		}
-		return cons.Next(opts...)
-	}
-	return msg, err
+	return withFetchCtx(ctx, "next", opts, cons.Next)
 }
 
 // PublishAsync 异步发布消息（批量发布，提高吞吐量）。

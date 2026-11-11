@@ -3,7 +3,6 @@ package streamx
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -151,6 +150,3 @@ func (s *SSESink) Close() error {
 	})
 	return closeErr
 }
-
-// ErrSinkEmpty 保留 sentinel(避免 unused 误删,实际用 ErrSinkClosed)。
-var ErrSinkEmpty = errors.New("streamx: empty sink data")
