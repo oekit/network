@@ -24,8 +24,8 @@
 //	// 发布
 //	err := client.Publish(ctx, "order.created", []byte(`{"id":1}`))
 //
-//	// 订阅
-//	sub, err := client.Subscribe(ctx, "order.created", func(msg *nats.Msg) {
+//	// 订阅（#167：Subscribe 无 ctx 参数，原文档示例多传了 ctx 照抄编译不过）
+//	sub, err := client.Subscribe("order.created", func(msg *nats.Msg) {
 //	    log.Printf("received: %s", string(msg.Data))
 //	})
 //	defer sub.Unsubscribe()

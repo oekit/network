@@ -235,9 +235,14 @@ func (b *Broadcaster) handleBroadcast(msg *broadcastMessage) {
 		wg.Wait()
 		close(done)
 	})
+	// waitTimeout 计时用可停 timer（#169）：提前完成（done 先到）时 defer
+	// Stop 归还 timer，不再遗留一个挂到 waitTimeout 的未停 timer——广播高频
+	// 的房间里这是每轮一次的 timer 堆积面。
+	timer := time.NewTimer(b.waitTimeout)
+	defer timer.Stop()
 	select {
 	case <-done:
-	case <-time.After(b.waitTimeout):
+	case <-timer.C:
 		wsLog.Warn("broadcast wait timeout; slow consumers dropped for this round",
 			"room", msg.room, "conns", len(connections), "timeout", b.waitTimeout)
 	}

@@ -250,8 +250,42 @@ func (js *JetStream) getOrCreateConsumer(ctx context.Context, stream, consumer s
 	})
 }
 
+// safeJetMsgHandler 把用户 handler 的调用包进 panic 收编层（#166，口径与
+// client.go safeMsgHandler 同源）。
+//
+// 为什么必须有：Consume 的 handler 跑在 nats.go jetstream 包的内部派发
+// goroutine 里，上游全 jetstream 包零 recover（pull.go/push.go 直接
+// handler(msg)）——用户 handler 一个 panic（外部不可信载荷语义残缺、nil
+// 解引用是最常见形态）就穿透到 goroutine 顶，整个进程连同其上所有订阅、
+// 所有在途请求一并消灭。core NATS 侧 Subscribe/QueueSubscribe 已按 #145
+// 收编（safeMsgHandler），JetStream 面是同一契约的漏网，本条补齐。
+//
+// 消息 fate 跟随消费者的 AckPolicy：自动 ACK 配置下 SDK 在 handler 正常
+// 返回后 ACK——收编后该条消息按已处理丢弃留痕；显式 ACK 配置下未 ACK 的
+// 消息按 AckWait 重投（毒丸消息由业务侧的重试上限/死信兜底）。
+//
+// 就地 recover 而非 async.GoSafe（另起 goroutine）：SDK 对同一消费者的
+// 消息派发是串行的，换 goroutine 会把串行语义变成并发——handler 里的
+// 非线程安全状态会从「安全」变「竞态」。禁止裸 go func 的约束（AGENTS.md）
+// 管的是启动 goroutine，这里不启动。
+func safeJetMsgHandler(stream, consumer string, handler jetstream.MessageHandler) jetstream.MessageHandler {
+	return func(msg jetstream.Msg) {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Error("jetstream handler panic recovered",
+					"stream", stream, "consumer", consumer,
+					"panic", fmt.Sprintf("%v", r))
+			}
+		}()
+		handler(msg)
+	}
+}
+
 // Consume 消费消息（推模式，自动管理 ACK）。
 // 返回 ConsumeContext，调用 Stop() 停止消费。
+//
+// handler 的 panic 被就地收编（#166，口径同 Subscribe/#145）：Error 留痕，
+// 消费者与进程存活；消息 fate 跟随消费者的 AckPolicy（见 safeJetMsgHandler）。
 //
 // ⚠️ ctx 只界「查/建消费者」阶段：上游 Consume 不收 ctx，消费一旦启动
 // **只由返回的 ConsumeContext 的 Stop()/Drain() 停止**（#103 文档化口径，
@@ -261,7 +295,7 @@ func (js *JetStream) Consume(ctx context.Context, stream, consumer string, handl
 	if err != nil {
 		return nil, fmt.Errorf("nats: get consumer %s: %w", consumer, err)
 	}
-	return cons.Consume(handler, opts...)
+	return cons.Consume(safeJetMsgHandler(stream, consumer, handler), opts...)
 }
 
 // Fetch 获取指定数量的消息（拉模式）。
