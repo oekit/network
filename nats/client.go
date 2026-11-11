@@ -103,20 +103,20 @@ func NewClient(urls string, opts ...NatsOption) (*Client, error) {
 		nats.DisconnectErrHandler(func(conn *nats.Conn, err error) {
 			log.Warn("disconnected", "err", err)
 			if o.onDisconnect != nil {
-				o.onDisconnect(conn, err)
+				safeLifecycleCallback("onDisconnect", func() { o.onDisconnect(conn, err) })
 			}
 		}),
 		nats.ReconnectHandler(func(conn *nats.Conn) {
 			log.Info("reconnected", "url", conn.ConnectedUrl())
 			if o.onReconnect != nil {
-				o.onReconnect(conn)
+				safeLifecycleCallback("onReconnect", func() { o.onReconnect(conn) })
 			}
 		}),
 		nats.ClosedHandler(func(conn *nats.Conn) {
 			log.Info("connection closed")
 			close(c.closedc)
 			if o.onClose != nil {
-				o.onClose(conn)
+				safeLifecycleCallback("onClose", func() { o.onClose(conn) })
 			}
 		}),
 	}
@@ -150,7 +150,11 @@ func (c *Client) ConnectedUrl() string {
 	return c.conn.ConnectedUrl()
 }
 
-// Drain 排空连接（等待所有消息处理完成后关闭）。
+// Drain 发起排空并立即返回（异步）：nats.go 的 Drain() 只启动排空，不等待
+// 完成（上游实现的考证见 Close 文档）。需要「等真正排空完成、连接进入
+// CLOSED」的同步语义（含超时兜底与强制关闭）用 Close(ctx)。
+// 返回值仅反映排空是否成功启动（#168：原文档「等待所有消息处理完成后关闭」
+// 与实现不符，已按真实行为修正）。
 func (c *Client) Drain() error {
 	return c.conn.Drain()
 }
@@ -306,6 +310,23 @@ func safeMsgHandler(subject string, handler func(*nats.Msg)) func(*nats.Msg) {
 		}()
 		handler(m)
 	}
+}
+
+// safeLifecycleCallback 收编生命周期回调的 panic（#165）。
+//
+// 为什么必须有：onDisconnect/onReconnect/onClose 三个回调跑在 nats.go 内部
+// goroutine（flusher/dispatcher）里，上游无 recover——回调一个 panic 即穿透
+// goroutine 顶杀死整个进程。断连/重连恰是故障期，回调里最常见的「打点/重连
+// 通知」正是容易 panic 的用户代码。口径与 safeMsgHandler 同源（#145）：Error
+// 留痕 + 回调丢弃，连接生命周期照常推进。
+func safeLifecycleCallback(name string, fn func()) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error("lifecycle callback panic recovered",
+				"callback", name, "panic", fmt.Sprintf("%v", r))
+		}
+	}()
+	fn()
 }
 
 // Subscribe 订阅主题，收到消息时调用 handler。
