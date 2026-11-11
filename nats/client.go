@@ -10,6 +10,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/oekit/logx"
+	pkgerrors "github.com/oekit/pkg/errors"
 	"github.com/oekit/tracing/traceid"
 )
 
@@ -213,62 +214,56 @@ func (c *Client) Close(ctx context.Context) error {
 
 // Publish 发布消息到指定主题。
 // nil ctx 按 context.Background 处理（#79，与同仓 WaitN/Acquire/DoValue
-// 的兜底口径一致）。
+// 的兜底口径一致）。守卫收敛见 publish（#162）。
 func (c *Client) Publish(ctx context.Context, subject string, data []byte) error {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if err := ctx.Err(); err != nil {
-		return fmt.Errorf("nats: publish cancelled: %w", err)
-	}
-	return c.conn.Publish(subject, data)
+	return c.publish(ctx, subject, data, false)
 }
 
 // PublishWithTraceID 发布消息并从 ctx 提取 trace_id 注入 NATS message header。
 // 配合 SubscribeJSON 自动恢复 trace_id 形成跨消息链路的完整追踪。
 // ctx 中无 trace_id 时退化为普通 Publish，行为向后兼容。
-// nil ctx 按 context.Background 处理（#79）。
+// nil ctx 按 context.Background 处理（#79）。守卫收敛见 publish（#162）。
 func (c *Client) PublishWithTraceID(ctx context.Context, subject string, data []byte) error {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if err := ctx.Err(); err != nil {
-		return fmt.Errorf("nats: publish cancelled: %w", err)
-	}
-	return c.publishMsg(ctx, subject, data)
+	return c.publish(ctx, subject, data, true)
 }
 
 // PublishJSON 发布 JSON 编码的消息。
-// nil ctx 按 context.Background 处理（#79）。
+// nil ctx 按 context.Background 处理（#79）。守卫收敛见 publish（#162）。
 func (c *Client) PublishJSON(ctx context.Context, subject string, v any) error {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if err := ctx.Err(); err != nil {
-		return fmt.Errorf("nats: publish cancelled: %w", err)
-	}
-	data, err := json.Marshal(v)
-	if err != nil {
-		return fmt.Errorf("nats: marshal: %w", err)
-	}
-	return c.conn.Publish(subject, data)
+	return c.publishJSON(ctx, subject, v, false)
 }
 
 // PublishJSONWithTraceID 发布 JSON 消息并从 ctx 提取 trace_id 注入 NATS message header。
 // 配合 SubscribeJSON 自动恢复 trace_id 形成跨消息链路的完整追踪。
-// nil ctx 按 context.Background 处理（#79）。
+// nil ctx 按 context.Background 处理（#79）。守卫收敛见 publish（#162）。
 func (c *Client) PublishJSONWithTraceID(ctx context.Context, subject string, v any) error {
-	if ctx == nil {
-		ctx = context.Background()
-	}
+	return c.publishJSON(ctx, subject, v, true)
+}
+
+// publish 是 Publish 系列的公共实现（#162）：此前四个导出入口各带一份逐字
+// 相同的「nil ctx 兜底 + ctx.Err 预检」内联守卫，与同文件 ensureCtx 两套写法
+// 并存——现在兜底统一走 ensureCtx（Request/RequestJSON 与整个 jetstream.go
+// 的同仓口径），预检单点在本方法。traced 为 true 时走 publishMsg 注入
+// trace_id header，false 时等价 conn.Publish（无 header）。
+func (c *Client) publish(ctx context.Context, subject string, data []byte, traced bool) error {
+	ctx = ensureCtx(ctx)
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("nats: publish cancelled: %w", err)
 	}
+	if traced {
+		return c.publishMsg(ctx, subject, data)
+	}
+	return c.conn.Publish(subject, data)
+}
+
+// publishJSON 是 PublishJSON/PublishJSONWithTraceID 的公共实现（#162）：
+// JSON 编码后落到 publish，只差是否注入 trace_id。
+func (c *Client) publishJSON(ctx context.Context, subject string, v any, traced bool) error {
 	data, err := json.Marshal(v)
 	if err != nil {
 		return fmt.Errorf("nats: marshal: %w", err)
 	}
-	return c.publishMsg(ctx, subject, data)
+	return c.publish(ctx, subject, data, traced)
 }
 
 // publishMsg 构造带 trace_id header 的 NATS 消息并发布。
@@ -317,16 +312,30 @@ func safeMsgHandler(subject string, handler func(*nats.Msg)) func(*nats.Msg) {
 // 为什么必须有：onDisconnect/onReconnect/onClose 三个回调跑在 nats.go 内部
 // goroutine（flusher/dispatcher）里，上游无 recover——回调一个 panic 即穿透
 // goroutine 顶杀死整个进程。断连/重连恰是故障期，回调里最常见的「打点/重连
-// 通知」正是容易 panic 的用户代码。口径与 safeMsgHandler 同源（#145）：Error
-// 留痕 + 回调丢弃，连接生命周期照常推进。
+// 通知」正是容易 panic 的用户代码。
+//
+// panic 值经 pkg/errors.Recovered 收编（#182 全矩阵单源，bootstrap/
+// concurrency 同口径）：error 身份不丢（回调以 panic(err) 失败时 errors.Is/
+// As 可穿透 PanicError 直达原始错误），栈与类型信息恒在场。本仓生命周期
+// 回调没有可上抛的 error 面（跑在 nats.go 内部 goroutine，日志是唯一出口），
+// 收编后的 error 经 log.Error 留痕（字段名走 logx.ErrKey 单源）：回调丢弃，
+// 连接生命周期照常推进。
 func safeLifecycleCallback(name string, fn func()) {
+	if err := recoverCallback(fn); err != nil {
+		log.Error("lifecycle callback panic recovered; callback dropped",
+			"callback", name, logx.ErrKey, err)
+	}
+}
+
+// recoverCallback 执行 fn 并把 panic 收编为 error（#165）：
+// pkg/errors.Recovered 单源转换——无 panic 时 recover() 返回 nil、
+// Recovered 直接返回 nil（零包装开销）。
+func recoverCallback(fn func()) (err error) {
 	defer func() {
-		if r := recover(); r != nil {
-			log.Error("lifecycle callback panic recovered",
-				"callback", name, "panic", fmt.Sprintf("%v", r))
-		}
+		err = pkgerrors.Recovered(recover())
 	}()
 	fn()
+	return nil
 }
 
 // Subscribe 订阅主题，收到消息时调用 handler。
@@ -356,34 +365,35 @@ func (c *Client) QueueSubscribe(subject, queue string, handler func(*nats.Msg)) 
 	return sub, nil
 }
 
+// decodeJSONHandler 是 SubscribeJSON/QueueSubscribeJSON 的公共解码闭包
+// （#162，两处逐字同构的 decode+extractTraceCtx 收敛为单点）：JSON 反序列化
+// 失败仅 Error 留痕并丢弃该条消息；解码成功则从 header 恢复 trace_id 注入
+// ctx 再调用户 handler。
+func decodeJSONHandler[T any](subject string, handler func(ctx context.Context, msg *T)) func(*nats.Msg) {
+	return func(m *nats.Msg) {
+		var payload T
+		if err := json.Unmarshal(m.Data, &payload); err != nil {
+			log.Error("unmarshal error", "subject", subject, logx.ErrKey, err)
+			return
+		}
+		handler(extractTraceCtx(m), &payload)
+	}
+}
+
 // SubscribeJSON 订阅主题并自动反序列化 JSON 消息。
 //
 // 从 NATS message header 中提取 trace_id（如果存在）并注入到 handler 的 ctx，
 // 保持分布式追踪在异步消息边界不断裂。Publisher 端需要在 Publish 时通过
 // PublishWithTraceID 注入 trace_id 才能形成完整链路。
 func SubscribeJSON[T any](c *Client, subject string, handler func(ctx context.Context, msg *T)) (*nats.Subscription, error) {
-	return c.Subscribe(subject, func(m *nats.Msg) {
-		var payload T
-		if err := json.Unmarshal(m.Data, &payload); err != nil {
-			log.Error("unmarshal error", "subject", subject, "err", err)
-			return
-		}
-		handler(extractTraceCtx(m), &payload)
-	})
+	return c.Subscribe(subject, decodeJSONHandler[T](subject, handler))
 }
 
 // QueueSubscribeJSON 订阅主题（队列模式）并自动反序列化 JSON 消息。
 //
 // 同 SubscribeJSON，从 NATS message header 中提取 trace_id 注入 ctx。
 func QueueSubscribeJSON[T any](c *Client, subject, queue string, handler func(ctx context.Context, msg *T)) (*nats.Subscription, error) {
-	return c.QueueSubscribe(subject, queue, func(m *nats.Msg) {
-		var payload T
-		if err := json.Unmarshal(m.Data, &payload); err != nil {
-			log.Error("unmarshal error", "subject", subject, "err", err)
-			return
-		}
-		handler(extractTraceCtx(m), &payload)
-	})
+	return c.QueueSubscribe(subject, queue, decodeJSONHandler[T](subject, handler))
 }
 
 // extractTraceCtx 从 NATS message header 中提取 trace_id 并构造带 trace_id 的 context。
