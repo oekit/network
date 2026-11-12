@@ -5,7 +5,7 @@ go 1.26.0
 require (
 	github.com/nats-io/nats-server/v2 v2.15.2
 	github.com/nats-io/nats.go v1.55.0
-	github.com/oekit/concurrency v0.34.0
+	github.com/oekit/concurrency v0.34.1
 	github.com/oekit/logx v0.10.0
 	github.com/oekit/pkg v0.46.0
 	github.com/oekit/tracing v0.4.1
