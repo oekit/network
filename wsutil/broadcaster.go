@@ -335,7 +335,7 @@ func (b *Broadcaster) BroadcastEvent(room string, event Event) {
 		// 2026-09-06 复审:原实现静默吞掉 marshal 错误(违反"所有 error
 		// 必须处理"),至少要留日志
 		wsLog.Warn("BroadcastEvent marshal failed; event dropped",
-			"room", room, "event_type", event.Type, "err", err)
+			"room", room, "event_type", event.Type, logx.ErrKey, err)
 		return
 	}
 	b.Broadcast(room, data)

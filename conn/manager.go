@@ -203,7 +203,7 @@ func (m *Manager) loop() {
 				break // nil error = success, no-op
 			}
 			if err != nil && conn != nil {
-				log.Error("connection error", "err", err)
+				log.Error("connection error", logx.ErrKey, err)
 				conn.Close()
 				conn = nil
 				reconnectc = m.after(time.Nanosecond)
@@ -215,7 +215,7 @@ func (m *Manager) loop() {
 func (m *Manager) doDial() net.Conn {
 	conn, err := m.dialer(m.network, m.address)
 	if err != nil {
-		log.Error("dial failed", "err", err)
+		log.Error("dial failed", logx.ErrKey, err)
 		return nil
 	}
 	return conn

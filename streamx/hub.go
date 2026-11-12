@@ -125,7 +125,7 @@ func (h *Hub) Run(ctx context.Context) error {
 				// 那是 **Sink** 语义的哨兵，一个返回它的源就是坏了，该留痕。
 				if !errors.Is(res.err, io.EOF) && !errors.Is(res.err, ErrSourceClosed) {
 					hubLog.Warn("streamx source failed, skipping source",
-						"err", res.err, "source_index", res.idx)
+						logx.ErrKey, res.err, "source_index", res.idx)
 				}
 				continue
 			}
@@ -135,7 +135,7 @@ func (h *Hub) Run(ctx context.Context) error {
 					// 但必须留痕 — 原实现连注释说的"记录"都没有
 					// (2026-09-06 复审修复)
 					hubLog.Warn("streamx sink emit failed",
-						"err", err, "event_type", res.ev.Type)
+						logx.ErrKey, err, "event_type", res.ev.Type)
 				}
 			}
 		case <-done:
