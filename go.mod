@@ -6,8 +6,8 @@ require (
 	github.com/nats-io/nats-server/v2 v2.15.2
 	github.com/nats-io/nats.go v1.55.0
 	github.com/oekit/concurrency v0.33.0
-	github.com/oekit/logx v0.9.2
-	github.com/oekit/pkg v0.45.0
+	github.com/oekit/logx v0.10.0
+	github.com/oekit/pkg v0.46.0
 	github.com/oekit/tracing v0.4.0
 	golang.org/x/crypto v0.58.0
 )
