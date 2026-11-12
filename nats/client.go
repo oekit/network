@@ -102,7 +102,7 @@ func NewClient(urls string, opts ...NatsOption) (*Client, error) {
 		nats.ReconnectWait(o.reconnectWait),
 		nats.MaxReconnects(o.maxReconnects),
 		nats.DisconnectErrHandler(func(conn *nats.Conn, err error) {
-			log.Warn("disconnected", "err", err)
+			log.Warn("disconnected", logx.ErrKey, err)
 			if o.onDisconnect != nil {
 				safeLifecycleCallback("onDisconnect", func() { o.onDisconnect(conn, err) })
 			}
@@ -461,7 +461,7 @@ func (c *Client) Reply(subject string, handler func(msg *nats.Msg) []byte) (*nat
 		}
 		reply := handler(msg)
 		if err := msg.Respond(reply); err != nil {
-			log.Error("respond error", "subject", subject, "err", err)
+			log.Error("respond error", "subject", subject, logx.ErrKey, err)
 		}
 	})
 }
