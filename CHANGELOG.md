@@ -1,5 +1,9 @@
 # Changelog — oekit/network
 
+## [v0.10.3] — 2026-11-13
+
+- 1 单修复：7 处手写 err 字面量→logx.ErrKey + 护栏测试（#176）；地板对齐 pkg v0.47.0/tracing v0.4.2。
+
 ## [v0.10.2] — 2026-11-12
 
 - Go 1.26 现代化清扫；依赖地板对齐（concurrency v0.34.1、tracing v0.4.1 已随 #175 抬升）。纯等价重构+地板追平，行为零变更。
