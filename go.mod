@@ -8,7 +8,7 @@ require (
 	github.com/oekit/concurrency v0.34.1
 	github.com/oekit/logx v0.10.0
 	github.com/oekit/pkg v0.47.0
-	github.com/oekit/tracing v0.4.2
+	github.com/oekit/tracing v0.4.3
 	golang.org/x/crypto v0.58.0
 )
 
