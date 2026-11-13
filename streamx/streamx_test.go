@@ -27,7 +27,7 @@ func (f *fakeSink) Emit(_ context.Context, ev Event) error {
 }
 func (f *fakeSink) Close() error { f.closed = true; return nil }
 
-// fakeSource 是测试用 Source,逐个返回给定 events,然后返回 ErrStreamExhausted。
+// fakeSource 是测试用 Source,逐个返回给定 events,然后返回 io.EOF。
 type fakeSource struct {
 	events []Event
 	idx    int
@@ -41,7 +41,7 @@ func (f *fakeSource) Next(_ context.Context) (Event, error) {
 		return Event{}, ErrSourceClosed
 	}
 	if f.idx >= len(f.events) {
-		return Event{}, ErrStreamExhausted // = io.EOF（#104 别名）
+		return Event{}, io.EOF // #104 契约口径
 	}
 	ev := f.events[f.idx]
 	f.idx++
@@ -75,8 +75,8 @@ func TestSliceSource_OrderAndIDs(t *testing.T) {
 		t.Errorf("ev3 = %+v, want Type=ping ID=seq-3", ev3)
 	}
 	_, err = src.Next(ctx)
-	if !errors.Is(err, ErrStreamExhausted) {
-		t.Errorf("Next after exhaust: err = %v, want ErrStreamExhausted", err)
+	if !errors.Is(err, io.EOF) {
+		t.Errorf("Next after exhaust: err = %v, want io.EOF", err)
 	}
 }
 
@@ -390,8 +390,8 @@ func TestSequenceToID(t *testing.T) {
 
 // TestSliceSource_ExhaustedIsIOEOF 回归（#104）：耗尽的哨兵必须是 io.EOF——
 // Source 接口契约两处写明「Next 返回 io.EOF 表示源耗尽」,按 `err == io.EOF`
-// 写的消费方必须拿得到终止信号。ErrStreamExhausted 保留为 io.EOF 的别名,
-// 既有 `errors.Is(err, ErrStreamExhausted)` 调用方不受影响。
+// 写的消费方必须拿得到终止信号。io.EOF 保留为 io.EOF 的别名,
+// 既有 `errors.Is(err, io.EOF)` 调用方不受影响。
 func TestSliceSource_ExhaustedIsIOEOF(t *testing.T) {
 	src := NewSliceSource([]Event{{Data: "only"}})
 	defer src.Close()
@@ -403,9 +403,6 @@ func TestSliceSource_ExhaustedIsIOEOF(t *testing.T) {
 	_, err := src.Next(ctx)
 	if !errors.Is(err, io.EOF) {
 		t.Errorf("exhausted err = %v, want io.EOF (#104: the interface contract says so)", err)
-	}
-	if !errors.Is(err, ErrStreamExhausted) {
-		t.Errorf("exhausted err = %v, want ErrStreamExhausted (kept as the io.EOF alias)", err)
 	}
 }
 

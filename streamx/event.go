@@ -92,7 +92,7 @@ func NewSliceSource(evs []Event) *SliceSource {
 
 // Next 实现 Source。
 //
-// 哨兵按接口契约(#104):耗尽返回 io.EOF(ErrStreamExhausted 是它的别名),
+// 哨兵按接口契约(#104):耗尽返回 io.EOF,
 // 关闭后返回 ErrSourceClosed——此前耗尽返回自定义哨兵、关闭却抛 **Sink**
 // 语义的 ErrSinkClosed,按 `err == io.EOF` 写的消费方拿不到终止信号,
 // Hub 也把「源正常关闭」判成了源故障。
@@ -107,7 +107,7 @@ func (s *SliceSource) Next(ctx context.Context) (Event, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.idx >= len(s.evs) {
-		return Event{}, ErrStreamExhausted
+		return Event{}, io.EOF
 	}
 	ev := s.evs[s.idx]
 	s.idx++
@@ -126,13 +126,8 @@ func (s *SliceSource) Close() error {
 	return nil
 }
 
-// ErrStreamExhausted 表示 SliceSource 已 emit 完所有事件。
-//
-// 它是 io.EOF 的**别名**(#104):Source 接口契约写明「Next 返回 io.EOF
-// 表示源耗尽」,按 `err == io.EOF` / errors.Is(err, io.EOF) 写的消费方必须
-// 拿得到终止信号。旧名字保留——errors.Is(err, ErrStreamExhausted) 同样
-// 成立,既有调用方不受影响。
-var ErrStreamExhausted = io.EOF
+// （历史别名 ErrStreamExhausted = io.EOF 已于 v0.11.0 删除——Source 契约
+// 口径唯一：耗尽即 io.EOF，#104。）
 
 // sequenceToID 把 Sequence 转成"seq-N"格式的字符串 ID。
 func sequenceToID(s Sequence) string {
