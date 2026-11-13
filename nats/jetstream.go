@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
+	"github.com/oekit/logx"
 )
 
 // JetStream 是 NATS JetStream v2 API 客户端封装。
@@ -250,8 +251,8 @@ func (js *JetStream) getOrCreateConsumer(ctx context.Context, stream, consumer s
 	})
 }
 
-// safeJetMsgHandler 把用户 handler 的调用包进 panic 收编层（#166，口径与
-// client.go safeMsgHandler 同源）。
+// safeJetMsgHandler 把用户 handler 的调用包进 panic 收编层（#166/#180，
+// 口径与 client.go safeMsgHandler 同源）。
 //
 // 为什么必须有：Consume 的 handler 跑在 nats.go jetstream 包的内部派发
 // goroutine 里，上游全 jetstream 包零 recover（pull.go/push.go 直接
@@ -259,6 +260,11 @@ func (js *JetStream) getOrCreateConsumer(ctx context.Context, stream, consumer s
 // 解引用是最常见形态）就穿透到 goroutine 顶，整个进程连同其上所有订阅、
 // 所有在途请求一并消灭。core NATS 侧 Subscribe/QueueSubscribe 已按 #145
 // 收编（safeMsgHandler），JetStream 面是同一契约的漏网，本条补齐。
+//
+// panic 值经 pkg/errors.Recovered 单源收编（#180，与 client.go
+// recoverMsgHandler 同一转换点）：error 身份不丢、栈与类型信息恒在场；
+// 日志字段名走 logx.ErrKey 单源——此前 fmt.Sprintf("%v", r) 把 panic 值
+// 拍平成纯文本，身份与栈双丢。
 //
 // 消息 fate 跟随消费者的 AckPolicy：自动 ACK 配置下 SDK 在 handler 正常
 // 返回后 ACK——收编后该条消息按已处理丢弃留痕；显式 ACK 配置下未 ACK 的
@@ -270,14 +276,11 @@ func (js *JetStream) getOrCreateConsumer(ctx context.Context, stream, consumer s
 // 管的是启动 goroutine，这里不启动。
 func safeJetMsgHandler(stream, consumer string, handler jetstream.MessageHandler) jetstream.MessageHandler {
 	return func(msg jetstream.Msg) {
-		defer func() {
-			if r := recover(); r != nil {
-				log.Error("jetstream handler panic recovered",
-					"stream", stream, "consumer", consumer,
-					"panic", fmt.Sprintf("%v", r))
-			}
-		}()
-		handler(msg)
+		if err := recoverMsgHandler(func() { handler(msg) }); err != nil {
+			log.Error("jetstream handler panic recovered",
+				"stream", stream, "consumer", consumer,
+				logx.ErrKey, err)
+		}
 	}
 }
 

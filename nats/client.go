@@ -279,7 +279,7 @@ func (c *Client) publishMsg(ctx context.Context, subject string, data []byte) er
 	return c.conn.PublishMsg(msg)
 }
 
-// safeMsgHandler 把用户 handler 的调用包进 panic 收编层（#145）。
+// safeMsgHandler 把用户 handler 的调用包进 panic 收编层（#145/#180）。
 //
 // 为什么必须有：handler 跑在 nats.go 的内部派发 goroutine（waitForMsgs）里，
 // 上游 SDK 的派发循环直接 mcb(m)、没有任何 recover（nats.go@v1.55.0/nats.go
@@ -291,19 +291,22 @@ func (c *Client) publishMsg(ctx context.Context, subject string, data []byte) er
 // 收编口径与 wsutil/outbox「写协程 panic 只许死这条连接，不许死整个进程」
 // 同源：panic 收编为 Error 日志 + 该条消息丢弃留痕，订阅与进程存活。
 //
+// panic 值经 pkg/errors.Recovered 单源收编（#180，与同文件 recoverCallback/
+// 生命周期收编同族）：error 身份不丢（handler 以 panic(err) 失败时 errors.Is/
+// As 可穿透 PanicError 直达原始错误），栈与类型信息恒在场；包装形态对齐
+// timertask 的 "task panic: %w"（保留 Unwrap 链）。日志字段名走 logx.ErrKey
+// 单源——此前 fmt.Sprintf("%v", r) 把 panic 值拍平成纯文本，身份与栈双丢。
+//
 // 就地 recover 而非 async.GoSafe（另起 goroutine）：nats.go 对同一订阅的
 // 消息是**串行**派发的（waitForMsgs 单 goroutine 逐条 mcb(m)），换 goroutine
 // 会把串行语义变成并发——handler 里的非线程安全状态会从「安全」变「竞态」。
 // 禁止裸 go func 的约束（AGENTS.md）管的是启动 goroutine，这里不启动。
 func safeMsgHandler(subject string, handler func(*nats.Msg)) func(*nats.Msg) {
 	return func(m *nats.Msg) {
-		defer func() {
-			if r := recover(); r != nil {
-				log.Error("handler panic recovered, message dropped",
-					"subject", subject, "panic", fmt.Sprintf("%v", r))
-			}
-		}()
-		handler(m)
+		if err := recoverMsgHandler(func() { handler(m) }); err != nil {
+			log.Error("handler panic recovered, message dropped",
+				"subject", subject, logx.ErrKey, err)
+		}
 	}
 }
 
@@ -333,6 +336,20 @@ func safeLifecycleCallback(name string, fn func()) {
 func recoverCallback(fn func()) (err error) {
 	defer func() {
 		err = pkgerrors.Recovered(recover())
+	}()
+	fn()
+	return nil
+}
+
+// recoverMsgHandler 执行用户 msg handler 并把 panic 收编为 error（#180）：
+// pkg/errors.Recovered 单源转换 + 包装形态对齐 timertask 的 "task panic: %w"
+// （%w 保留 Unwrap 链，panic(err) 的 error 身份经 PanicError.Unwrap 穿透）。
+// 无 panic 时返回 nil（recover() 返回 nil、Recovered 直接返回 nil，零包装开销）。
+func recoverMsgHandler(fn func()) (err error) {
+	defer func() {
+		if perr := pkgerrors.Recovered(recover()); perr != nil {
+			err = fmt.Errorf("msg handler panic: %w", perr)
+		}
 	}()
 	fn()
 	return nil
