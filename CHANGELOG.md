@@ -1,5 +1,11 @@
 # Changelog — oekit/network
 
+## [v0.10.4] — 2026-11-13
+
+- panic 收编单源：msg handler 双路走 pkg/errors.Recovered（#180）+ 日志 err 键收口 logx.ErrKey（#176）
+
+关联问题单：network#176、network#180。
+
 ## [v0.10.3] — 2026-11-13
 
 - 1 单修复：7 处手写 err 字面量→logx.ErrKey + 护栏测试（#176）；地板对齐 pkg v0.47.0/tracing v0.4.2。
