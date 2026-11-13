@@ -1,5 +1,15 @@
 # Changelog — oekit/network
 
+## [v0.11.0] — 2026-11-13
+
+- **BREAKING**：删除 streamx.ErrStreamExhausted 别名（#104）——Source 契约口径唯一：耗尽即 io.EOF。下游迁移：errors.Is(err, ErrStreamExhausted) → errors.Is(err, io.EOF)（同一值，零行为变化）。地板随迁 pkg v0.48.0 / logx v0.11.0 / concurrency v0.36.0。
+
+## [v0.10.4] — 2026-11-13
+
+- panic 收编单源：msg handler 双路走 pkg/errors.Recovered（#180）+ 日志 err 键收口 logx.ErrKey（#176）
+
+关联问题单：network#176、network#180。
+
 ## [v0.10.3] — 2026-11-13
 
 - 1 单修复：7 处手写 err 字面量→logx.ErrKey + 护栏测试（#176）；地板对齐 pkg v0.47.0/tracing v0.4.2。
