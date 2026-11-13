@@ -6,6 +6,8 @@
 
 ## [v0.10.4] — 2026-11-13
 
+> **旁支版本**：本节发布于 v0.11.0（同日 20:29）之后 56 分钟，版本号却低于 v0.11.0——内容 = v0.11.0 + 地板追平 pkg v0.48.0（#204），按旧线补发所致。**主线版本线以 v0.11.0 为准**，v0.10.4 不在主线版本线上（已登记 matrix-tools/scripts/version_line_known.json）。
+
 - panic 收编单源：msg handler 双路走 pkg/errors.Recovered（#180）+ 日志 err 键收口 logx.ErrKey（#176）
 
 关联问题单：network#176、network#180。
