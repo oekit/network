@@ -112,6 +112,10 @@ func (a sseFuncAdapter) Close() error                         { return a.close()
 // ⚠️ Event.Retry 当前不透传:SSEStreamOp 的 Send/SendRaw 签名没有 retry
 // 位,上游 hertz sse.Writer.WriteEvent 虽支持,ekit 适配层未暴露 — 置该
 // 字段无效(字段文档已同步修正,不再宣称"仅 SSE 生效")。
+//
+// ⚠️ Event.Sequence 同样不上 SSE 线格式(id 位仍用 ev.ID,序号既不进 id
+// 也不进 data,#221):需要把序号送到客户端的业务请把它放进 Event.Data,
+// 或实现带序号透传的自定义 Sink。进程内判断丢包/重排可直接读 ev.Sequence。
 func (s *SSESink) Emit(_ context.Context, ev Event) error {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
