@@ -247,18 +247,37 @@ func TestManager_Loop_Reconnect(t *testing.T) {
 	m.Stop()
 }
 
-// TestExponential_Progression verifies the backoff doubles on each call
-// and stays within ±50% jitter.
+// TestExponential_Progression verifies the backoff contract of Exponential:
+//   - 输入 ≤ 30s：翻倍后 ±50% jitter ⇒ [输入, 3×输入)（jitter 下界 0.5 恰好回到输入）
+//   - 输入 > 30s：翻倍必越 1 分钟上限 ⇒ 基数钳到 60s 再 jitter ⇒ [30s, 60s]
+//     （60×0.5=30s 地板；末次钳制保证 ≤60s——此分支结果**可以低于输入**，
+//     这是钳制的既定语义，不是回归）
+//   - 结果恒正（非正输入/回绕走 1ns 兜底）
+//
+// 旧断言恒用 [prev, 3prev]，没建模钳制：链条一旦越过 30s，钳制+jitter 可合法
+// 落到 prev 之下（如 prev=57.57s 时 60×0.84=50.55s），单次运行约四成概率破界
+// ——CI 在 changelog PR 上随机踩红的实测来源。
 func TestExponential_Progression(t *testing.T) {
 	prev := time.Second
 	for i := 0; i < 5; i++ {
 		d := Exponential(prev)
-		// expected range: prev*2*0.5 .. prev*2*1.5
-		lo := prev
-		hi := prev * 3
+		var lo, hi time.Duration
+		if prev > time.Minute/2 {
+			lo, hi = 30*time.Second, time.Minute
+		} else {
+			// 上限钳制只会压低上界，[prev, 3prev) 在 ≤30s 段恒成立
+			lo, hi = prev, prev*3
+		}
 		if d < lo || d > hi {
-			t.Errorf("iter %d: backoff %v out of expected [%v, %v]", i, d, lo, hi)
+			t.Errorf("iter %d (prev %v): backoff %v out of expected [%v, %v]", i, prev, d, lo, hi)
 		}
 		prev = d
+	}
+
+	// 非正输入兜底：不退化为「无退避的立即重连」
+	for _, in := range []time.Duration{0, -time.Second} {
+		if got := Exponential(in); got <= 0 {
+			t.Errorf("Exponential(%v) = %v, want a positive backoff", in, got)
+		}
 	}
 }
