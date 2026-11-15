@@ -1,5 +1,13 @@
 # Changelog — oekit/network
 
+## [v0.11.1] — 2026-11-15
+
+- StreamSpec.Storage 注释纠正为库事实（#219）：FileStorage=iota=0，守卫恒等写，内嵌 NATS 测试断言落服务端形态
+- sshx keepalive 口径统一（#220）：连续累计超过 tolerated 次才触发（ErrBusy 不计入不清零），补确定性触发序钉子
+- streamx Sequence 补实现（#221）：Event.Sequence 字段、SliceSource 连续编号、Hub 扇出补号，承诺的丢包/重排判断面可用了
+
+关联问题单：network#219、network#220、network#221。
+
 ## [v0.11.0] — 2026-11-13
 
 - **BREAKING**：删除 streamx.ErrStreamExhausted 别名（#104）——Source 契约口径唯一：耗尽即 io.EOF。下游迁移：errors.Is(err, ErrStreamExhausted) → errors.Is(err, io.EOF)（同一值，零行为变化）。地板随迁 pkg v0.48.0 / logx v0.11.0 / concurrency v0.36.0。
