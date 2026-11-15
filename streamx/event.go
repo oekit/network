@@ -21,7 +21,10 @@ import (
 )
 
 // Sequence 是单调递增的事件序号,业务可借此判断丢包/重排。
-// 0 表示未分配(由 Sink/Hub 在 Emit 时填充)。
+// 0 表示未分配(由产出方填充:SliceSource 在 Next 时编号、Hub 在扇出时给
+// 未带号的事件补号)。同一条流内全部事件连续递增——显式 ID 的事件同样
+// 占号,序号不跳;缺省 ID(seq-N)虽由序号生成,但带显式 ID 的事件不改写
+// ID,故 ID 序列会跳号:丢包/重排判断读 Sequence 字段,不要读 ID(#221)。
 type Sequence uint64
 
 // Event 是流式响应的最小数据单元,跨 SSE/WS/Chunked Transfer 通用。
@@ -31,11 +34,16 @@ type Sequence uint64
 //   - Data: 业务数据(序列化策略由 Sink 决定:JSON for SSE/WS,raw for chunked)。
 //   - Retry: SSE retry 字段(毫秒)。⚠️ 当前 SSEStreamOp 适配层未暴露
 //     retry 位,置值无效(2026-09-06 文档修正)。
+//   - Sequence: 事件序号,0=未分配,由 SliceSource/Hub 填充(见 Sequence
+//     类型文档);⚠️ 不上协议线格式(SSE 的 id 位仍用 ID)——端到端序号请
+//     业务放进 Data(#221)。
 type Event struct {
 	ID    string
 	Type  string
 	Data  any
 	Retry int
+	// Sequence 事件序号(单调递增,0=未分配,由产出方填充,见 Sequence 类型文档)。
+	Sequence Sequence
 }
 
 // ErrSinkClosed 表示 Sink 已关闭,Emit 返回它。
@@ -114,6 +122,11 @@ func (s *SliceSource) Next(ctx context.Context) (Event, error) {
 	s.seq++
 	if ev.ID == "" {
 		ev.ID = sequenceToID(s.seq)
+	}
+	// 连续编号(#221):显式 ID 的事件同样占号——序号对全部事件 1..N 不跳,
+	// 丢包判断读 Sequence;ID 只在未显式指定时按号生成(可能跳号)。
+	if ev.Sequence == 0 {
+		ev.Sequence = s.seq
 	}
 	return ev, nil
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"sync"
+	"sync/atomic"
 
 	"github.com/oekit/concurrency/async"
 	"github.com/oekit/logx"
@@ -29,6 +30,9 @@ type Hub struct {
 	sources []Source
 	sinks   []Sink
 	closed  bool
+	// seq 给扇出时未带序号的事件补号(#221)。atomic 而非裸字段:补号发生在
+	// Run 的串行扇出循环,但 Hub 可被多次 Run,序号必须跨 Run 单调不重复。
+	seq atomic.Uint64
 }
 
 // NewHub 构造空 hub,业务调 AttachSource/AttachSink 装配。
@@ -64,6 +68,10 @@ func (h *Hub) AttachSink(s Sink) bool {
 //
 // 不同 Source 的事件没有全局排序保证(并发拉取,先到先扇出);
 // 单个 Source 内部保持 Next 返回的顺序。
+//
+// 序号(#221):扇出时给未带 Sequence 的事件补号(本 Hub 单调递增),
+// 已带号的透传不覆盖——多 Source 混用且各来源自带号时序号空间可能重叠,
+// 按序号判断丢包请单 Source,或统一只由一方编号。
 func (h *Hub) Run(ctx context.Context) error {
 	h.mu.RLock()
 	if len(h.sources) == 0 {
@@ -127,6 +135,11 @@ func (h *Hub) Run(ctx context.Context) error {
 						logx.ErrKey, res.err, "source_index", res.idx)
 				}
 				continue
+			}
+			// 未带号的事件补号(#221):扇出是单点,所有 sink 看到同一序号;
+			// 已带号(如 SliceSource 已编的号)透传不覆盖。
+			if res.ev.Sequence == 0 {
+				res.ev.Sequence = Sequence(h.seq.Add(1))
 			}
 			for _, snk := range sinks {
 				if err := snk.Emit(ctx, res.ev); err != nil {

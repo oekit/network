@@ -76,9 +76,11 @@ type StreamSpec struct {
 	Name string
 	// Subjects 流的 subject 通配集。空值时取 Name+".>"（三仓一致的缺省形态）。
 	Subjects []string
-	// Storage 存储策略。零值取 FileStorage（三仓一致）。⚠ nats.go 的
-	// MemoryStorage 与零值同为 0、无法与「未设置」区分——内存流不是本原语
-	// 的目标场景，需要时直接用 CreateOrUpdateStream 传完整 StreamConfig。
+	// Storage 存储策略。零值即 FileStorage——nats.go 的常量是
+	// `FileStorage = iota`（0）、`MemoryStorage`（1），0 就是 FileStorage，
+	// 与「未设置」的判定（== 0）恰好同形（三仓缺省一致取 FileStorage）；
+	// MemoryStorage(=1) 可直接传入本字段，与零值完全可区分（#219——本处
+	// 曾误写「MemoryStorage 与零值同为 0」，与库事实相反）。
 	Storage jetstream.StorageType
 	// Retention 保留策略。零值即 LimitsPolicy（与库缺省一致）；显式
 	// InterestPolicy / WorkQueuePolicy 直接生效。WorkQueue 存量流的不可原地
@@ -130,6 +132,9 @@ func (js *JetStream) EnsureStream(ctx context.Context, spec StreamSpec) (jetstre
 		MaxBytes:  spec.MaxBytes,
 	}
 	// 零值 = 家族缺省（#122）：缺省常量集中一处，语义见 StreamSpec 字段文档。
+	// Storage 这条在 nats.go 现行常量下是恒等写（FileStorage 即 0，#219）：
+	// 保留只为把缺省显式落进 cfg，日志/对账一眼看出最终取值，不是「归一化
+	// 一个与零值不同的值」。
 	if cfg.Storage == 0 {
 		cfg.Storage = jetstream.FileStorage
 	}
