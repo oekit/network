@@ -3,9 +3,10 @@ package streamx
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"sync"
 	"sync/atomic"
+
+	errors "github.com/oekit/pkg/errors"
 )
 
 // SSEStreamOp 是 hertz/sse.Stream 暴露给 streamx 的最小子集(4 方法)。
@@ -128,7 +129,7 @@ func (s *SSESink) Emit(_ context.Context, ev Event) error {
 	if ev.ID != "" {
 		encoded, err := json.Marshal(ev.Data)
 		if err != nil {
-			return fmt.Errorf("streamx: marshal event %q: %w", ev.Type, err)
+			return errors.Wrapf(err, "streamx: marshal event %q", ev.Type)
 		}
 		return s.stream.SendRaw(ev.ID, ev.Type, encoded)
 	}
