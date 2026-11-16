@@ -10,11 +10,11 @@ package sshx
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"os/exec"
 	"strings"
 
+	pkgerrors "github.com/oekit/pkg/errors"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -25,11 +25,11 @@ import (
 func LoadSigner(path string) (ssh.Signer, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("read key %s: %w", path, err)
+		return nil, pkgerrors.Wrapf(err, "read key %s", path)
 	}
 	signer, err := ssh.ParsePrivateKey(raw)
 	if err != nil {
-		return nil, fmt.Errorf("parse key %s: %w", path, err)
+		return nil, pkgerrors.Wrapf(err, "parse key %s", path)
 	}
 	return signer, nil
 }
@@ -60,7 +60,7 @@ func DetectKeyType(ctx context.Context, path string) (string, error) {
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return "", fmt.Errorf("cannot read %s: %w", path, err)
+		return "", pkgerrors.Wrapf(err, "cannot read %s", path)
 	}
 	// 第一级：直接解析。
 	if signer, perr := ssh.ParsePrivateKey(raw); perr == nil {
@@ -106,7 +106,7 @@ func headerKeyType(raw []byte) string {
 func ParsePublicKey(publicKey string) (ssh.PublicKey, error) {
 	pub, _, _, _, err := ssh.ParseAuthorizedKey([]byte(strings.TrimSpace(publicKey)))
 	if err != nil {
-		return nil, fmt.Errorf("parse public key: %w", err)
+		return nil, pkgerrors.Wrapf(err, "parse public key")
 	}
 	return pub, nil
 }
@@ -137,7 +137,7 @@ func ParseSinglePublicKey(publicKey string) (ssh.PublicKey, error) {
 	}
 	pub, comment, _, _, err := ssh.ParseAuthorizedKey([]byte(trimmed))
 	if err != nil {
-		return nil, fmt.Errorf("parse public key: %w", err)
+		return nil, pkgerrors.Wrapf(err, "parse public key")
 	}
 	// 一行塞两把时第二把落进 comment（authorized_keys 的 comment 是自由
 	// 文本）。判据是「comment 里还藏着一把能解析的公钥」：解析得出 ⇒ 这

@@ -25,6 +25,7 @@ import (
 	"net"
 	"time"
 
+	pkgerrors "github.com/oekit/pkg/errors"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -89,7 +90,7 @@ type DialOptions struct {
 // 集成方的重试逻辑不再对上游措辞做字符串匹配。
 func Dial(ctx context.Context, addr string, cc *ssh.ClientConfig, opts DialOptions) (*ssh.Client, error) {
 	if cc == nil {
-		return nil, fmt.Errorf("dial %s: no client config", addr)
+		return nil, pkgerrors.Newf("dial %s: no client config", addr)
 	}
 	// nil ctx 兜底 Background（#79）：ctx 只取 Deadline/取消语义，
 	// Background（无截止、永不取消）即「调用方没有额外约束」。
@@ -119,7 +120,7 @@ func Dial(ctx context.Context, addr string, cc *ssh.ClientConfig, opts DialOptio
 	}
 	conn, err := dialFn(ctx, connect, "tcp", addr)
 	if err != nil {
-		return nil, fmt.Errorf("dial %s: %w", addr, err)
+		return nil, pkgerrors.Wrapf(err, "dial %s", addr)
 	}
 	// 握手窗口在**拨号完成之后**求值（#106）：旧的实现在拨号**前**就用
 	// 当时的剩余时间把握手窗口定死、又把窗口锚定在拨号完成时刻——连接
@@ -139,14 +140,14 @@ func Dial(ctx context.Context, addr string, cc *ssh.ClientConfig, opts DialOptio
 	if handshake <= 0 {
 		// 连接阶段已把预算/ctx 耗尽：立即放弃，不做一场没人会等结果的握手。
 		_ = conn.Close()
-		return nil, fmt.Errorf("dial %s: budget or context deadline exhausted after connect (took %s)",
+		return nil, pkgerrors.Newf("dial %s: budget or context deadline exhausted after connect (took %s)",
 			addr, time.Since(start).Round(time.Millisecond))
 	}
 	// 截止时间必须设在 socket 上：那是唯一能从外面界住 x/crypto/ssh 握手
 	// 的地方。
 	if err := conn.SetDeadline(time.Now().Add(handshake)); err != nil {
 		_ = conn.Close()
-		return nil, fmt.Errorf("set the handshake deadline on %s: %w", addr, err)
+		return nil, pkgerrors.Wrapf(err, "set the handshake deadline on %s", addr)
 	}
 	clientConn, chans, reqs, herr := ssh.NewClientConn(conn, addr, cc)
 	if herr != nil {

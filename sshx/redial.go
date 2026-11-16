@@ -20,9 +20,9 @@ package sshx
 import (
 	"context"
 	"errors"
-	"fmt"
 	"time"
 
+	pkgerrors "github.com/oekit/pkg/errors"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -60,7 +60,7 @@ type DialPolicy struct {
 // nil cc / nil ctx 的兜底与 Dial 一致。
 func DialWithPolicy(ctx context.Context, addr string, cc *ssh.ClientConfig, opts DialOptions, policy DialPolicy) (*ssh.Client, error) {
 	if cc == nil {
-		return nil, fmt.Errorf("dial %s: no client config", addr)
+		return nil, pkgerrors.Newf("dial %s: no client config", addr)
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -102,10 +102,10 @@ func DialWithPolicy(ctx context.Context, addr string, cc *ssh.ClientConfig, opts
 			remaining := opts.Budget - time.Since(start)
 			if remaining <= 0 {
 				if lastErr == nil {
-					return nil, fmt.Errorf("dial %s: redial budget exhausted before the first attempt", addr)
+					return nil, pkgerrors.Newf("dial %s: redial budget exhausted before the first attempt", addr)
 				}
-				return nil, fmt.Errorf("dial %s: redial budget exhausted after %d attempt(s) (took %s): %w",
-					addr, attempt, time.Since(start).Round(time.Millisecond), lastErr)
+				return nil, pkgerrors.Wrapf(lastErr, "dial %s: redial budget exhausted after %d attempt(s) (took %s)",
+					addr, attempt, time.Since(start).Round(time.Millisecond))
 			}
 			attemptOpts.Budget = remaining
 		}
