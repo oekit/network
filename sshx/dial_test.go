@@ -5,13 +5,13 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"errors"
-	"fmt"
 	"net"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	pkgerrors "github.com/oekit/pkg/errors"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -551,7 +551,7 @@ func TestHandshakeErrorTypes(t *testing.T) {
 	}
 
 	// As 走链：外层再包一层也照样判得出类型。
-	wrapped := fmt.Errorf("retry budget exhausted: %w", to)
+	wrapped := pkgerrors.Wrap(to, "retry budget exhausted")
 	var hte *HandshakeTimeoutError
 	if !errors.As(wrapped, &hte) {
 		t.Error("errors.As must find the typed error through wrapping")
