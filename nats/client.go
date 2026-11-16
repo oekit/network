@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"sync"
 	"time"
 
@@ -128,7 +127,7 @@ func NewClient(urls string, opts ...NatsOption) (*Client, error) {
 
 	conn, err := nats.Connect(urls, natsOpts...)
 	if err != nil {
-		return nil, fmt.Errorf("nats connect: %w", err)
+		return nil, pkgerrors.Wrapf(err, "nats connect")
 	}
 	c.conn = conn
 
@@ -196,7 +195,7 @@ func (c *Client) Close(ctx context.Context) error {
 			if !errors.Is(err, nats.ErrConnectionClosed) &&
 				!errors.Is(err, nats.ErrConnectionReconnecting) &&
 				!errors.Is(err, nats.ErrConnectionDraining) {
-				closeErr = fmt.Errorf("nats: drain: %w", err)
+				closeErr = pkgerrors.Wrapf(err, "nats: drain")
 			}
 			return
 		}
@@ -206,7 +205,7 @@ func (c *Client) Close(ctx context.Context) error {
 		case <-ctx.Done():
 			// 排空超时：不再等在途 handler，强制关闭兜底，关停有界
 			c.conn.Close()
-			closeErr = fmt.Errorf("nats: close: drain timeout, forced close: %w", ctx.Err())
+			closeErr = pkgerrors.Wrapf(ctx.Err(), "nats: close: drain timeout, forced close")
 		}
 	})
 	return closeErr
@@ -248,7 +247,7 @@ func (c *Client) PublishJSONWithTraceID(ctx context.Context, subject string, v a
 func (c *Client) publish(ctx context.Context, subject string, data []byte, traced bool) error {
 	ctx = ensureCtx(ctx)
 	if err := ctx.Err(); err != nil {
-		return fmt.Errorf("nats: publish cancelled: %w", err)
+		return pkgerrors.Wrapf(err, "nats: publish cancelled")
 	}
 	if traced {
 		return c.publishMsg(ctx, subject, data)
@@ -261,7 +260,7 @@ func (c *Client) publish(ctx context.Context, subject string, data []byte, trace
 func (c *Client) publishJSON(ctx context.Context, subject string, v any, traced bool) error {
 	data, err := json.Marshal(v)
 	if err != nil {
-		return fmt.Errorf("nats: marshal: %w", err)
+		return pkgerrors.Wrapf(err, "nats: marshal")
 	}
 	return c.publish(ctx, subject, data, traced)
 }
@@ -348,7 +347,7 @@ func recoverCallback(fn func()) (err error) {
 func recoverMsgHandler(fn func()) (err error) {
 	defer func() {
 		if perr := pkgerrors.Recovered(recover()); perr != nil {
-			err = fmt.Errorf("msg handler panic: %w", perr)
+			err = pkgerrors.Wrap(perr, "msg handler panic")
 		}
 	}()
 	fn()
@@ -363,7 +362,7 @@ func recoverMsgHandler(fn func()) (err error) {
 func (c *Client) Subscribe(subject string, handler func(*nats.Msg)) (*nats.Subscription, error) {
 	sub, err := c.conn.Subscribe(subject, safeMsgHandler(subject, handler))
 	if err != nil {
-		return nil, fmt.Errorf("nats subscribe %s: %w", subject, err)
+		return nil, pkgerrors.Wrapf(err, "nats subscribe %s", subject)
 	}
 	log.Info("subscribed", "subject", subject)
 	return sub, nil
@@ -376,7 +375,7 @@ func (c *Client) Subscribe(subject string, handler func(*nats.Msg)) (*nats.Subsc
 func (c *Client) QueueSubscribe(subject, queue string, handler func(*nats.Msg)) (*nats.Subscription, error) {
 	sub, err := c.conn.QueueSubscribe(subject, queue, safeMsgHandler(subject, handler))
 	if err != nil {
-		return nil, fmt.Errorf("nats queue subscribe %s/%s: %w", subject, queue, err)
+		return nil, pkgerrors.Wrapf(err, "nats queue subscribe %s/%s", subject, queue)
 	}
 	log.Info("queue subscribed", "subject", subject, "group", queue)
 	return sub, nil
@@ -436,7 +435,7 @@ func (c *Client) Request(ctx context.Context, subject string, data []byte, timeo
 	defer cancel()
 	resp, err := c.conn.RequestWithContext(ctx, subject, data)
 	if err != nil {
-		return nil, fmt.Errorf("nats request %s: %w", subject, err)
+		return nil, pkgerrors.Wrapf(err, "nats request %s", subject)
 	}
 	return resp, nil
 }
@@ -452,19 +451,19 @@ func (c *Client) Request(ctx context.Context, subject string, data []byte, timeo
 func RequestJSON[Req, Resp any](ctx context.Context, c *Client, subject string, req *Req, timeout time.Duration) (*Resp, error) {
 	data, err := json.Marshal(req)
 	if err != nil {
-		return nil, fmt.Errorf("nats: marshal request: %w", err)
+		return nil, pkgerrors.Wrapf(err, "nats: marshal request")
 	}
 
 	ctx, cancel := context.WithTimeout(ensureCtx(ctx), timeout)
 	defer cancel()
 	resp, err := c.conn.RequestWithContext(ctx, subject, data)
 	if err != nil {
-		return nil, fmt.Errorf("nats request %s: %w", subject, err)
+		return nil, pkgerrors.Wrapf(err, "nats request %s", subject)
 	}
 
 	var result Resp
 	if err := json.Unmarshal(resp.Data, &result); err != nil {
-		return nil, fmt.Errorf("nats: unmarshal response: %w", err)
+		return nil, pkgerrors.Wrapf(err, "nats: unmarshal response")
 	}
 	return &result, nil
 }
