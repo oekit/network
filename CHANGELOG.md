@@ -1,5 +1,9 @@
 # Changelog — oekit/network
 
+## [v0.11.2] — 2026-11-16
+
+- refactor: fmt.Errorf → oekit/pkg/errors 三形态对位替换（#520 替换波）+ 依赖地板抬至 pkg v0.52.0。文案逐字节同形（测试断言零修改），多 %w/%w 居中/哨兵前置形态按仓规保留
+
 ## [v0.11.1] — 2026-11-15
 
 - StreamSpec.Storage 注释纠正为库事实（#219）：FileStorage=iota=0，守卫恒等写，内嵌 NATS 测试断言落服务端形态
