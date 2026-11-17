@@ -1,5 +1,9 @@
 # Changelog — oekit/network
 
+## [v0.11.3] — 2026-11-18
+
+- nil-ctx 兜底收敛 contextx.OrBackground(#159 口径单源收尾,6 处);地板对齐 pkg v0.53.0
+
 ## [v0.11.2] — 2026-11-16
 
 - refactor: fmt.Errorf → oekit/pkg/errors 三形态对位替换（#520 替换波）+ 依赖地板抬至 pkg v0.52.0。文案逐字节同形（测试断言零修改），多 %w/%w 居中/哨兵前置形态按仓规保留
