@@ -25,6 +25,7 @@ import (
 	"net"
 	"time"
 
+	"github.com/oekit/pkg/contextx"
 	pkgerrors "github.com/oekit/pkg/errors"
 	"golang.org/x/crypto/ssh"
 )
@@ -73,9 +74,7 @@ type DialOptions struct {
 // **拨号完成之后**求值（#106）：预算是总预算、锚定在 Dial 入口，ctx 的
 // 截止时间同样压住握手；连接阶段耗掉的 T 不会再让总耗时可接近 2×预算、
 // 或超出 ctx 截止时间约 T。
-// nil ctx 按 context.Background 处理（#79，与同仓 ratelimit.TokenBucket.WaitN /
-// syncx.Gate.Acquire / retry.DoValue 的兜底口径一致），不留给调用方一个
-// nil 解引用 panic。
+// nil ctx 按 context.Background 处理，不留给调用方一个 nil 解引用 panic。
 //
 // 返回的 client 拥有这条连接：Close 它就关掉 socket。
 //
@@ -92,11 +91,8 @@ func Dial(ctx context.Context, addr string, cc *ssh.ClientConfig, opts DialOptio
 	if cc == nil {
 		return nil, pkgerrors.Newf("dial %s: no client config", addr)
 	}
-	// nil ctx 兜底 Background（#79）：ctx 只取 Deadline/取消语义，
-	// Background（无截止、永不取消）即「调用方没有额外约束」。
-	if ctx == nil {
-		ctx = context.Background()
-	}
+	// 口径单源：pkg/contextx.OrBackground（nil = Background）。
+	ctx = contextx.OrBackground(ctx)
 	// 总预算锚定在 Dial 入口（#106）：从这里起算「这次调用花了多久」。
 	start := time.Now()
 	connect := opts.Connect

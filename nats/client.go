@@ -9,20 +9,19 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/oekit/logx"
+	"github.com/oekit/pkg/contextx"
 	pkgerrors "github.com/oekit/pkg/errors"
 	"github.com/oekit/tracing/traceid"
 )
 
 var log = logx.Delegating("nats")
 
-// ensureCtx 兜底 nil ctx 为 context.Background（#79/#101 同仓口径：nil ctx
-// 是常见形态，Background（无截止、永不取消）即「调用方没有额外约束」，
-// 而不是把 nil 透传给标准库/上游 SDK 换一个 panic）。
+// ensureCtx 兜底 nil ctx 为 context.Background：nil ctx 是常见形态，
+// Background（无截止、永不取消）即「调用方没有额外约束」，而不是把 nil
+// 透传给标准库/上游 SDK 换一个 panic。
+// 口径单源：pkg/contextx.OrBackground（#79/#101 收尾）。
 func ensureCtx(ctx context.Context) context.Context {
-	if ctx == nil {
-		return context.Background()
-	}
-	return ctx
+	return contextx.OrBackground(ctx)
 }
 
 // Client 是 NATS 客户端封装。
@@ -169,15 +168,13 @@ func (c *Client) Drain() error {
 //
 // 签名遵循矩阵硬规则「组件 Close 统一 Close(ctx) error + sync.Once 幂等」：
 // 仅首次调用执行关闭动作并返回其结果，后续调用直接返回 nil。
-// nil ctx 按 context.Background() 处理（#79 口径）。
+// nil ctx 按 context.Background() 处理。
 //
 // ⚠️ BREAKING（0.x 允许）：原无参 Close() 移除——Go 不支持同名方法重载，
 // 无法按 issue #83 的设想保留无参兼容别名；调用点改为
 // c.Close(context.Background())。需要不等待排空的立即关闭，用 c.Conn().Close()。
 func (c *Client) Close(ctx context.Context) error {
-	if ctx == nil {
-		ctx = context.Background()
-	}
+	ctx = contextx.OrBackground(ctx)
 	var closeErr error
 	c.closeOnce.Do(func() {
 		if err := c.conn.Drain(); err != nil {
@@ -212,8 +209,7 @@ func (c *Client) Close(ctx context.Context) error {
 }
 
 // Publish 发布消息到指定主题。
-// nil ctx 按 context.Background 处理（#79，与同仓 WaitN/Acquire/DoValue
-// 的兜底口径一致）。守卫收敛见 publish（#162）。
+// nil ctx 按 context.Background 处理。守卫收敛见 publish（#162）。
 func (c *Client) Publish(ctx context.Context, subject string, data []byte) error {
 	return c.publish(ctx, subject, data, false)
 }
@@ -221,20 +217,20 @@ func (c *Client) Publish(ctx context.Context, subject string, data []byte) error
 // PublishWithTraceID 发布消息并从 ctx 提取 trace_id 注入 NATS message header。
 // 配合 SubscribeJSON 自动恢复 trace_id 形成跨消息链路的完整追踪。
 // ctx 中无 trace_id 时退化为普通 Publish，行为向后兼容。
-// nil ctx 按 context.Background 处理（#79）。守卫收敛见 publish（#162）。
+// nil ctx 按 context.Background 处理。守卫收敛见 publish（#162）。
 func (c *Client) PublishWithTraceID(ctx context.Context, subject string, data []byte) error {
 	return c.publish(ctx, subject, data, true)
 }
 
 // PublishJSON 发布 JSON 编码的消息。
-// nil ctx 按 context.Background 处理（#79）。守卫收敛见 publish（#162）。
+// nil ctx 按 context.Background 处理。守卫收敛见 publish（#162）。
 func (c *Client) PublishJSON(ctx context.Context, subject string, v any) error {
 	return c.publishJSON(ctx, subject, v, false)
 }
 
 // PublishJSONWithTraceID 发布 JSON 消息并从 ctx 提取 trace_id 注入 NATS message header。
 // 配合 SubscribeJSON 自动恢复 trace_id 形成跨消息链路的完整追踪。
-// nil ctx 按 context.Background 处理（#79）。守卫收敛见 publish（#162）。
+// nil ctx 按 context.Background 处理。守卫收敛见 publish（#162）。
 func (c *Client) PublishJSONWithTraceID(ctx context.Context, subject string, v any) error {
 	return c.publishJSON(ctx, subject, v, true)
 }
@@ -427,8 +423,8 @@ func extractTraceCtx(m *nats.Msg) context.Context {
 
 // Request 发送请求并等待回复。
 // 使用 context 控制超时和取消。
-// nil ctx 按 context.Background 处理（#101，与同文件 Publish 系列的兜底
-// 口径一致——同一份客户端对所有 API 容忍 nil ctx，不挑入口崩进程）。
+// nil ctx 按 context.Background 处理（同一份客户端对所有 API 容忍 nil ctx，
+// 不挑入口崩进程）。
 func (c *Client) Request(ctx context.Context, subject string, data []byte, timeout time.Duration) (*nats.Msg, error) {
 	// nil ctx 直接 WithTimeout 会 panic "cannot create context from nil parent"
 	ctx, cancel := context.WithTimeout(ensureCtx(ctx), timeout)
@@ -442,7 +438,7 @@ func (c *Client) Request(ctx context.Context, subject string, data []byte, timeo
 
 // RequestJSON 发送 JSON 请求并反序列化响应。
 // 使用 context 控制超时和取消。
-// nil ctx 按 context.Background 处理（#101，与同文件 Publish 系列口径一致）。
+// nil ctx 按 context.Background 处理。
 //
 // ⚠️ BREAKING（#88，0.x 阶段允许）：ctx 由第二位移至首位，与 Request 及
 // Go「ctx 首参」惯例对齐——旧形态 RequestJSON[Req, Resp](c, ctx, ...) 与
