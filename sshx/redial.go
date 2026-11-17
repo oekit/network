@@ -22,6 +22,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/oekit/pkg/contextx"
 	pkgerrors "github.com/oekit/pkg/errors"
 	"golang.org/x/crypto/ssh"
 )
@@ -62,9 +63,7 @@ func DialWithPolicy(ctx context.Context, addr string, cc *ssh.ClientConfig, opts
 	if cc == nil {
 		return nil, pkgerrors.Newf("dial %s: no client config", addr)
 	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
+	ctx = contextx.OrBackground(ctx)
 	retries := policy.Retries
 	if retries <= 0 {
 		retries = 1

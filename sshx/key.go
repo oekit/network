@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/oekit/pkg/contextx"
 	pkgerrors "github.com/oekit/pkg/errors"
 	"golang.org/x/crypto/ssh"
 )
@@ -46,18 +47,15 @@ func LoadSigner(path string) (ssh.Signer, error) {
 //
 // ctx 管住第二级里那个外部进程：ssh-keygen 在一个卡住的 agent 上会一直
 // 等下去，而调用方不该为此无限期等下去。nil ctx 按 context.Background
-// 处理（#100，与 #79 对 Dial 的兜底同仓口径）——exec.CommandContext 对
-// nil ctx 直接 panic，而「解析不了的私钥」（带口令/损坏/非 OpenSSH 格式）
-// 必然走到这一级，nil ctx 不能是进程崩掉的开关。
+// 处理——exec.CommandContext 对 nil ctx 直接 panic，而「解析不了的私钥」
+// （带口令/损坏/非 OpenSSH 格式）必然走到这一级，nil ctx 不能是进程崩掉的
+// 开关。
 //
 // 读不出文件是错误（调用方拿到的路径就是错的）；读得出但认不出类型不是
 // 错误——返回 "unknown" 或粗粒度结论，让调用方自己去判断。
 func DetectKeyType(ctx context.Context, path string) (string, error) {
-	// nil ctx 兜底 Background（#100）：兜底必须盖住**每一条**会消费 ctx
-	// 的路径——#79 只盖了 Dial，这里补第二级 ssh-keygen 这条。
-	if ctx == nil {
-		ctx = context.Background()
-	}
+	// 口径单源：pkg/contextx.OrBackground（nil = Background）。
+	ctx = contextx.OrBackground(ctx)
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return "", pkgerrors.Wrapf(err, "cannot read %s", path)

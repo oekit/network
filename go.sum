@@ -24,8 +24,8 @@ github.com/oekit/concurrency v0.38.1 h1:eGJt9IVc7J3FYN5nNx7OQz1D7Cpm7JtJ+xjIt5Ch
 github.com/oekit/concurrency v0.38.1/go.mod h1:aT/K82YRzEviyd1JRLBvrEGDVpqG3uUqCdol+ZlEHo8=
 github.com/oekit/logx v0.11.0 h1:dlDDIqs04ibDJ7HJg1O0gd/gXUbirFc4WPHgjQV5N/w=
 github.com/oekit/logx v0.11.0/go.mod h1:aIxiaegg9jzyvXhGXNcjq7ljAdVC2ERUCHqGN+thui0=
-github.com/oekit/pkg v0.52.0 h1:xh8dtda3oJ83y49yl49VpTYvpyeSVGKlVQswBmVYWms=
-github.com/oekit/pkg v0.52.0/go.mod h1:Cr6sJpBX2a0gAIgLa32+NY69h/UZtuN6L1ZdXtP9upo=
+github.com/oekit/pkg v0.53.0 h1:aZXhWFGCvobXsznIvoi8cMgrwlIpez+8hpLylijgxjU=
+github.com/oekit/pkg v0.53.0/go.mod h1:Cr6sJpBX2a0gAIgLa32+NY69h/UZtuN6L1ZdXtP9upo=
 github.com/oekit/tracing v0.4.7 h1:uxZS1EwXknXGmEq5Mzqy1yjx7ZOG1+WpwkMnvSUh6gc=
 github.com/oekit/tracing v0.4.7/go.mod h1:k8F+H9LaJq5azcYZzYr9BM3IptIvs7XicJiL6fDlV04=
 github.com/stretchr/testify v1.12.1 h1:EuwCh5fleGS7H32xRwO3wRGT7DxrDhLAT6FF8MpWDWE=
