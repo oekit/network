@@ -24,6 +24,7 @@ import (
 
 	"github.com/oekit/pkg/contextx"
 	pkgerrors "github.com/oekit/pkg/errors"
+	"github.com/oekit/pkg/timex"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -119,18 +120,9 @@ func DialWithPolicy(ctx context.Context, addr string, cc *ssh.ClientConfig, opts
 	}
 }
 
-// sleepRedial 可被取消的等待。d <= 0 视为无需等待（预算/截止已把等待夹到零，
-// 立即重拨），不算打断。
+// sleepRedial 可被取消的等待，直接委托 timex.SleepContext（#244，语义单源
+// 在 timex 侧 godoc 钉死）：d <= 0 视为无需等待（预算/截止已把等待夹到零，
+// 立即重拨），不算打断；ctx 取消/到期返回 ctx.Err()，等待不吞取消信号。
 func sleepRedial(ctx context.Context, d time.Duration) error {
-	if d <= 0 {
-		return nil
-	}
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-t.C:
-		return nil
-	}
+	return timex.SleepContext(ctx, d)
 }
