@@ -1,5 +1,11 @@
 # Changelog — oekit/network
 
+## [v0.11.4] — 2026-11-19
+
+- - refactor: sshx sleepRedial 委托 timex.SleepContext 单源（#530 点名的最后一个消费方，原为手写 timer+select 同构实现，行为逐字等价并补直通/取消用例）；conn manager 抖动随机源迁 math/rand/v2（矩阵 #386 标准，同签名直替）（#244）
+
+关联问题单：network#244。
+
 ## [v0.11.3] — 2026-11-18
 
 - nil-ctx 兜底收敛 contextx.OrBackground(#159 口径单源收尾,6 处);地板对齐 pkg v0.53.0
