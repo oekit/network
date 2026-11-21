@@ -1,5 +1,14 @@
 # Changelog — oekit/network
 
+## [v0.12.0] — 2026-11-21
+
+- 第三轮设计/缺陷审计（2026-11-21）network 修复：
+
+- feat: mq 新增 v2 投递契约——Subscribe(ctx, subject, handler func(ctx, Message) error)、Message（Ack/Nak/Term/Headers/AckDeadline）、SubscriptionV2.Unsubscribe(ctx) 有界幂等、MQClientV2；显式 Ack/Nak/Term 优先、未处置时 nil=Ack/error=Nak、ErrAckUnsupported 禁止伪装确认；旧接口 Deprecated 指向 v2（#251）
+- fix: sshx sleepRedial 已委托 timex.SleepContext（承接前轮）；conn 抖动 rand/v2
+
+关联问题单：network#251。
+
 ## [v0.11.4] — 2026-11-19
 
 - - refactor: sshx sleepRedial 委托 timex.SleepContext 单源（#530 点名的最后一个消费方，原为手写 timer+select 同构实现，行为逐字等价并补直通/取消用例）；conn manager 抖动随机源迁 math/rand/v2（矩阵 #386 标准，同签名直替）（#244）
