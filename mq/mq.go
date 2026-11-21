@@ -24,6 +24,12 @@ type Publisher interface {
 }
 
 // Subscriber 消息订阅接口。
+//
+// Deprecated: v1 订阅面无法表达 ctx 生命周期、handler 错误/ack 返回与有界
+// 取消（#251）——不能承载 JetStream/NATS 的至少一次语义（显式 Ack、失败
+// 重投、毒丸 Term）。新代码用 [SubscriberV2]；v2 的对应物是
+// [SubscriptionV2] / [MessageHandlerV2] / [Message]。本接口仅为存量实现
+// 保留，后续大版本移除。
 type Subscriber interface {
 	// Subscribe 订阅消息。
 	Subscribe(subject string, handler MessageHandler) (Subscription, error)
@@ -52,6 +58,10 @@ type Requester interface {
 }
 
 // MQClient 消息队列客户端接口，组合了 Publisher、Subscriber 和 Requester。
+//
+// Deprecated: 订阅侧组合的是已废弃的 [Subscriber]（无 ctx/ack/重投，见
+// #251）。发布/请求两半语义未变，整体替代见 [MQClientV2]（Publisher +
+// [SubscriberV2] + Requester + Close）；新代码直接用 MQClientV2。
 type MQClient interface {
 	Publisher
 	Subscriber
@@ -72,9 +82,15 @@ type MQClient interface {
 }
 
 // MessageHandler 消息处理函数。
+//
+// Deprecated: 无 error/ack 返回，实现无法据此决定 Ack 还是重投（#251），
+// 也拿不到 headers 与 ack deadline。新代码用 [MessageHandlerV2]。
 type MessageHandler func(ctx context.Context, msg []byte)
 
 // Subscription 订阅句柄。
+//
+// Deprecated: Unsubscribe 无 ctx，关停预算与在途 handler 的上界无处安放
+// （#251），慢消费者场景只能无界等待。新代码用 [SubscriptionV2]。
 type Subscription interface {
 	// Unsubscribe 取消订阅。
 	Unsubscribe() error
