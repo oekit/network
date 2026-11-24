@@ -10,6 +10,8 @@ import (
 
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/oekit/logx"
+	"github.com/oekit/pkg/contextx"
+	pkgerrors "github.com/oekit/pkg/errors"
 )
 
 // JetStream 是 NATS JetStream v2 API 客户端封装。
@@ -24,7 +26,7 @@ type JetStream struct {
 func (c *Client) NewJetStream() (*JetStream, error) {
 	js, err := jetstream.New(c.conn)
 	if err != nil {
-		return nil, fmt.Errorf("nats jetstream: %w", err)
+		return nil, pkgerrors.Wrap(err, "nats jetstream")
 	}
 	return &JetStream{js: js, clientName: c.opts.name}, nil
 }
@@ -32,7 +34,7 @@ func (c *Client) NewJetStream() (*JetStream, error) {
 // CreateStream 创建流（如果不存在）。
 // 仅在流确实不存在（ErrStreamNotFound）时创建；
 // 瞬时错误原样返回，避免误判掩盖真实故障。
-// nil ctx 按 context.Background 处理（#101，与 Client 系列兜底口径一致）。
+// nil ctx 按 context.Background 处理。
 func (js *JetStream) CreateStream(ctx context.Context, name string, subjects ...string) error {
 	ctx = ensureCtx(ctx)
 	_, err := js.js.Stream(ctx, name)
@@ -40,7 +42,7 @@ func (js *JetStream) CreateStream(ctx context.Context, name string, subjects ...
 		return nil
 	}
 	if !errors.Is(err, jetstream.ErrStreamNotFound) {
-		return fmt.Errorf("nats: get stream %s: %w", name, err)
+		return pkgerrors.Wrapf(err, "nats: get stream %s", name)
 	}
 
 	_, err = js.js.CreateStream(ctx, jetstream.StreamConfig{
@@ -48,7 +50,7 @@ func (js *JetStream) CreateStream(ctx context.Context, name string, subjects ...
 		Subjects: subjects,
 	})
 	if err != nil {
-		return fmt.Errorf("nats: create stream %s: %w", name, err)
+		return pkgerrors.Wrapf(err, "nats: create stream %s", name)
 	}
 	log.Info("stream created", "name", name, "subjects", subjects)
 	return nil
@@ -76,9 +78,11 @@ type StreamSpec struct {
 	Name string
 	// Subjects 流的 subject 通配集。空值时取 Name+".>"（三仓一致的缺省形态）。
 	Subjects []string
-	// Storage 存储策略。零值取 FileStorage（三仓一致）。⚠ nats.go 的
-	// MemoryStorage 与零值同为 0、无法与「未设置」区分——内存流不是本原语
-	// 的目标场景，需要时直接用 CreateOrUpdateStream 传完整 StreamConfig。
+	// Storage 存储策略。零值即 FileStorage——nats.go 的常量是
+	// `FileStorage = iota`（0）、`MemoryStorage`（1），0 就是 FileStorage，
+	// 与「未设置」的判定（== 0）恰好同形（三仓缺省一致取 FileStorage）；
+	// MemoryStorage(=1) 可直接传入本字段，与零值完全可区分（#219——本处
+	// 曾误写「MemoryStorage 与零值同为 0」，与库事实相反）。
 	Storage jetstream.StorageType
 	// Retention 保留策略。零值即 LimitsPolicy（与库缺省一致）；显式
 	// InterestPolicy / WorkQueuePolicy 直接生效。WorkQueue 存量流的不可原地
@@ -105,7 +109,7 @@ type StreamSpec struct {
 // 重启」的修复文案——删除会丢弃未消费消息，先确认消费水位。新增/删除 subject
 // 对 WorkQueue 存量流同样受限（部分版本服务端直接拒绝），冲突时同样按文案处置。
 //
-// nil ctx 按 context.Background 处理（#101，与 JetStream 系列兜底口径一致）。
+// nil ctx 按 context.Background 处理。
 func (js *JetStream) EnsureStream(ctx context.Context, spec StreamSpec) (jetstream.Stream, error) {
 	ctx = ensureCtx(ctx)
 
@@ -130,6 +134,9 @@ func (js *JetStream) EnsureStream(ctx context.Context, spec StreamSpec) (jetstre
 		MaxBytes:  spec.MaxBytes,
 	}
 	// 零值 = 家族缺省（#122）：缺省常量集中一处，语义见 StreamSpec 字段文档。
+	// Storage 这条在 nats.go 现行常量下是恒等写（FileStorage 即 0，#219）：
+	// 保留只为把缺省显式落进 cfg，日志/对账一眼看出最终取值，不是「归一化
+	// 一个与零值不同的值」。
 	if cfg.Storage == 0 {
 		cfg.Storage = jetstream.FileStorage
 	}
@@ -149,7 +156,7 @@ func (js *JetStream) EnsureStream(ctx context.Context, spec StreamSpec) (jetstre
 		if _, getErr := js.js.Stream(ctx, name); getErr == nil {
 			return nil, fmt.Errorf("nats: update stream %s: %w（存量流配置冲突，不可原地更新——常见于 retention 到/从 workqueue、storage 类型变更；需手动删除该流后重启，删除会丢弃未消费消息，先确认消费水位）", name, err)
 		}
-		return nil, fmt.Errorf("nats: create/update stream %s: %w", name, err)
+		return nil, pkgerrors.Wrapf(err, "nats: create/update stream %s", name)
 	}
 	log.Info("stream ensured", "name", name, "subjects", subjects)
 	return s, nil
@@ -176,47 +183,45 @@ func derivedStreamName(clientName string) string {
 }
 
 // Stream 获取流。
-// nil ctx 按 context.Background 处理（#101）。
+// nil ctx 按 context.Background 处理。
 func (js *JetStream) Stream(ctx context.Context, name string) (jetstream.Stream, error) {
 	return js.js.Stream(ensureCtx(ctx), name)
 }
 
 // DeleteStream 删除流。
-// nil ctx 按 context.Background 处理（#101）。
+// nil ctx 按 context.Background 处理。
 func (js *JetStream) DeleteStream(ctx context.Context, name string) error {
 	return js.js.DeleteStream(ensureCtx(ctx), name)
 }
 
 // Publish 发布消息到 JetStream 流。
-// nil ctx 按 context.Background 处理（#79，与 Client.Publish 口径一致）。
+// nil ctx 按 context.Background 处理。
 func (js *JetStream) Publish(ctx context.Context, subject string, data []byte, opts ...jetstream.PublishOpt) (*jetstream.PubAck, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
+	ctx = contextx.OrBackground(ctx)
 	ack, err := js.js.Publish(ctx, subject, data, opts...)
 	if err != nil {
-		return nil, fmt.Errorf("nats: jetstream publish %s: %w", subject, err)
+		return nil, pkgerrors.Wrapf(err, "nats: jetstream publish %s", subject)
 	}
 	return ack, nil
 }
 
 // PublishJSON 发布 JSON 消息到 JetStream 流。
-// nil ctx 按 context.Background 处理（#79）。
+// nil ctx 按 context.Background 处理。
 func (js *JetStream) PublishJSON(ctx context.Context, subject string, v any, opts ...jetstream.PublishOpt) (*jetstream.PubAck, error) {
 	data, err := json.Marshal(v)
 	if err != nil {
-		return nil, fmt.Errorf("nats: marshal: %w", err)
+		return nil, pkgerrors.Wrapf(err, "nats: marshal")
 	}
 	return js.Publish(ctx, subject, data, opts...)
 }
 
 // CreateOrUpdateConsumer 创建或更新消费者。
-// nil ctx 按 context.Background 处理（#101）。
+// nil ctx 按 context.Background 处理。
 func (js *JetStream) CreateOrUpdateConsumer(ctx context.Context, stream string, cfg jetstream.ConsumerConfig) (jetstream.Consumer, error) {
 	ctx = ensureCtx(ctx)
 	s, err := js.js.Stream(ctx, stream)
 	if err != nil {
-		return nil, fmt.Errorf("nats: get stream %s: %w", stream, err)
+		return nil, pkgerrors.Wrapf(err, "nats: get stream %s", stream)
 	}
 	return s.CreateOrUpdateConsumer(ctx, cfg)
 }
@@ -226,7 +231,7 @@ func (js *JetStream) CreateOrUpdateConsumer(ctx context.Context, stream string, 
 func (js *JetStream) getOrCreateConsumer(ctx context.Context, stream, consumer string) (jetstream.Consumer, error) {
 	s, err := js.js.Stream(ctx, stream)
 	if err != nil {
-		return nil, fmt.Errorf("nats: get stream %s: %w", stream, err)
+		return nil, pkgerrors.Wrapf(err, "nats: get stream %s", stream)
 	}
 	// 先尝试获取已有消费者
 	cons, err := s.Consumer(ctx, consumer)
@@ -237,7 +242,7 @@ func (js *JetStream) getOrCreateConsumer(ctx context.Context, stream, consumer s
 	// "不存在" 会以默认配置重建消费者，导致已有 DeliverPolicy 丢失、
 	// 整条流重新投递
 	if !errors.Is(err, jetstream.ErrConsumerNotFound) {
-		return nil, fmt.Errorf("nats: get consumer %s: %w", consumer, err)
+		return nil, pkgerrors.Wrapf(err, "nats: get consumer %s", consumer)
 	}
 	// 不存在则创建。必须建 **durable** 消费者（#99）：只给 Name 时服务端按
 	// 临时（ephemeral）消费者处理，强制 InactiveThreshold=5s（nats-server 的
@@ -292,11 +297,11 @@ func safeJetMsgHandler(stream, consumer string, handler jetstream.MessageHandler
 //
 // ⚠️ ctx 只界「查/建消费者」阶段：上游 Consume 不收 ctx，消费一旦启动
 // **只由返回的 ConsumeContext 的 Stop()/Drain() 停止**（#103 文档化口径，
-// SDK 限制）。nil ctx 按 context.Background 处理（#101）。
+// SDK 限制）。nil ctx 按 context.Background 处理。
 func (js *JetStream) Consume(ctx context.Context, stream, consumer string, handler jetstream.MessageHandler, opts ...jetstream.PullConsumeOpt) (jetstream.ConsumeContext, error) {
 	cons, err := js.getOrCreateConsumer(ensureCtx(ctx), stream, consumer)
 	if err != nil {
-		return nil, fmt.Errorf("nats: get consumer %s: %w", consumer, err)
+		return nil, pkgerrors.Wrapf(err, "nats: get consumer %s", consumer)
 	}
 	return cons.Consume(safeJetMsgHandler(stream, consumer, handler), opts...)
 }
@@ -310,12 +315,12 @@ func (js *JetStream) Consume(ctx context.Context, stream, consumer string, handl
 // 例外：调用方显式给 FetchMaxWait 时，上游禁止与 FetchContext 同用
 // （ErrInvalidOption），此时以显式超时为准回退无 ctx 形态（SDK 限制，
 // 取消息阶段最多等 FetchMaxWait）——见 fetchWithContext。
-// nil ctx 按 context.Background 处理（#101）。
+// nil ctx 按 context.Background 处理。
 func (js *JetStream) Fetch(ctx context.Context, stream, consumer string, batchSize int, opts ...jetstream.FetchOpt) (jetstream.MessageBatch, error) {
 	ctx = ensureCtx(ctx)
 	cons, err := js.getOrCreateConsumer(ctx, stream, consumer)
 	if err != nil {
-		return nil, fmt.Errorf("nats: get consumer %s: %w", consumer, err)
+		return nil, pkgerrors.Wrapf(err, "nats: get consumer %s", consumer)
 	}
 	return fetchWithContext(ctx, cons, batchSize, opts...)
 }
@@ -324,12 +329,12 @@ func (js *JetStream) Fetch(ctx context.Context, stream, consumer string, batchSi
 //
 // ctx 界住**整个调用**（#103）：同 Fetch，经 jetstream.FetchContext 注入
 // 取消息阶段，取消不再等 30s 过期。例外口径同 Fetch（FetchMaxWait 优先）。
-// nil ctx 按 context.Background 处理（#101）。
+// nil ctx 按 context.Background 处理。
 func (js *JetStream) Next(ctx context.Context, stream, consumer string, opts ...jetstream.FetchOpt) (jetstream.Msg, error) {
 	ctx = ensureCtx(ctx)
 	cons, err := js.getOrCreateConsumer(ctx, stream, consumer)
 	if err != nil {
-		return nil, fmt.Errorf("nats: get consumer %s: %w", consumer, err)
+		return nil, pkgerrors.Wrapf(err, "nats: get consumer %s", consumer)
 	}
 	return nextWithContext(ctx, cons, opts...)
 }
@@ -338,32 +343,32 @@ func (js *JetStream) Next(ctx context.Context, stream, consumer string, opts ...
 //
 // ⚠️ ctx 只界「查/建消费者」阶段：上游 Messages 不收 ctx，迭代器一旦创建
 // 只由返回的 MessagesContext 的 Stop()/Drain() 停止（#103 文档化口径，
-// SDK 限制）。nil ctx 按 context.Background 处理（#101）。
+// SDK 限制）。nil ctx 按 context.Background 处理。
 func (js *JetStream) Messages(ctx context.Context, stream, consumer string) (jetstream.MessagesContext, error) {
 	cons, err := js.getOrCreateConsumer(ensureCtx(ctx), stream, consumer)
 	if err != nil {
-		return nil, fmt.Errorf("nats: get consumer %s: %w", consumer, err)
+		return nil, pkgerrors.Wrapf(err, "nats: get consumer %s", consumer)
 	}
 	return cons.Messages()
 }
 
 // ConsumerInfo 获取消费者信息。
-// nil ctx 按 context.Background 处理（#101）。
+// nil ctx 按 context.Background 处理。
 func (js *JetStream) ConsumerInfo(ctx context.Context, stream, consumer string) (*jetstream.ConsumerInfo, error) {
 	cons, err := js.getOrCreateConsumer(ensureCtx(ctx), stream, consumer)
 	if err != nil {
-		return nil, fmt.Errorf("nats: get consumer %s: %w", consumer, err)
+		return nil, pkgerrors.Wrapf(err, "nats: get consumer %s", consumer)
 	}
 	return cons.Info(ensureCtx(ctx))
 }
 
 // StreamInfo 获取流信息。
-// nil ctx 按 context.Background 处理（#101）。
+// nil ctx 按 context.Background 处理。
 func (js *JetStream) StreamInfo(ctx context.Context, stream string) (*jetstream.StreamInfo, error) {
 	ctx = ensureCtx(ctx)
 	s, err := js.js.Stream(ctx, stream)
 	if err != nil {
-		return nil, fmt.Errorf("nats: get stream %s: %w", stream, err)
+		return nil, pkgerrors.Wrapf(err, "nats: get stream %s", stream)
 	}
 	return s.Info(ctx)
 }
@@ -378,14 +383,14 @@ func (js *JetStream) StreamInfo(ctx context.Context, stream string) (*jetstream.
 func withFetchCtx[T any](ctx context.Context, opName string, opts []jetstream.FetchOpt, run func(opts ...jetstream.FetchOpt) (T, error)) (T, error) {
 	var zero T
 	if err := ctx.Err(); err != nil {
-		return zero, fmt.Errorf("nats: %s cancelled: %w", opName, err)
+		return zero, pkgerrors.Wrapf(err, "nats: %s cancelled", opName)
 	}
 	res, err := run(append([]jetstream.FetchOpt{jetstream.FetchContext(ctx)}, opts...)...)
 	if errors.Is(err, jetstream.ErrInvalidOption) {
 		// FetchMaxWait 冲突（或 deadline 恰在注入判定后过期）：ctx 已取消/
 		// 到期则直接返回取消原因；否则回退调用方给的显式超时形态。
 		if cerr := ctx.Err(); cerr != nil {
-			return zero, fmt.Errorf("nats: %s cancelled: %w", opName, cerr)
+			return zero, pkgerrors.Wrapf(cerr, "nats: %s cancelled", opName)
 		}
 		return run(opts...)
 	}

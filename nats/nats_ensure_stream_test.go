@@ -118,6 +118,34 @@ func TestJetStream_EnsureStream_ExplicitConfigWins(t *testing.T) {
 	}
 }
 
+// TestJetStream_EnsureStream_MemoryStoragePassThrough 钉住 #219：nats.go 的
+// 常量是 FileStorage=iota(0) / MemoryStorage(1)——零值即 FileStorage，
+// MemoryStorage(=1) 与零值完全可区分、可直接传入 StreamSpec.Storage（本字段
+// 注释曾误写「MemoryStorage 与零值同为 0」，把一条可用路径判死）。内存流
+// 必须原样落到服务端配置上，不被零值守卫翻成 FileStorage。
+func TestJetStream_EnsureStream_MemoryStoragePassThrough(t *testing.T) {
+	c := newJSClient(t, "fuxi-memstore")
+	js, err := c.NewJetStream()
+	if err != nil {
+		t.Fatalf("NewJetStream: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	spec := StreamSpec{Name: "MEM_EVENTS", Storage: jetstream.MemoryStorage}
+	if _, err = js.EnsureStream(ctx, spec); err != nil {
+		t.Fatalf("EnsureStream (MemoryStorage): %v", err)
+	}
+	info, err := js.StreamInfo(ctx, "MEM_EVENTS")
+	if err != nil {
+		t.Fatalf("StreamInfo: %v", err)
+	}
+	if info.Config.Storage != jetstream.MemoryStorage {
+		t.Errorf("storage = %v, want MemoryStorage（MemoryStorage 可直接传入，#219）", info.Config.Storage)
+	}
+}
+
 // TestJetStream_EnsureStream_IdempotentThenUpdates 回归（#122）：同一 spec
 // 重复调用必须幂等（启动期安全重入）；改字段后再调用走 CreateOrUpdateStream
 // 的原地更新语义（与窄原语 CreateStream「已存在即不动」的区别所在）。

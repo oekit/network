@@ -260,3 +260,38 @@ func TestDialWithPolicy_NilConfigAndContext(t *testing.T) {
 		t.Fatal("expected a dial error to the refused port (nil ctx falls back to Background)")
 	}
 }
+
+// TestSleepRedial_ZeroOrNegativeDuration d<=0 直通语义（#244 委托
+// timex.SleepContext 后口径不变）：预算/截止已把等待夹到零时立即重拨、
+// 不算打断——即便 ctx 已取消也返回 nil，取消由后续尝试自查。
+func TestSleepRedial_ZeroOrNegativeDuration(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // 已取消的 ctx 不改变 d<=0 直通分支
+	if err := sleepRedial(ctx, 0); err != nil {
+		t.Errorf("d=0 应直通返回 nil，got %v", err)
+	}
+	if err := sleepRedial(ctx, -time.Second); err != nil {
+		t.Errorf("d<0 应直通返回 nil，got %v", err)
+	}
+}
+
+// TestSleepRedial_ContextCancelAndElapsed 委托 timex.SleepContext 后的两个
+// 打断面：ctx 取消立即返回 context.Canceled（等待不吞取消信号）；未被取消
+// 时睡满返回 nil。
+func TestSleepRedial_ContextCancelAndElapsed(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+	start := time.Now()
+	if err := sleepRedial(ctx, 5*time.Second); !errors.Is(err, context.Canceled) {
+		t.Fatalf("want context.Canceled, got %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Errorf("取消应立即打断等待，实际耗时 %s", elapsed)
+	}
+	if err := sleepRedial(context.Background(), 10*time.Millisecond); err != nil {
+		t.Errorf("睡满应返回 nil，got %v", err)
+	}
+}

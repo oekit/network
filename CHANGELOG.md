@@ -1,10 +1,47 @@
 # Changelog — oekit/network
 
+## [v0.12.1] — 2026-11-23
+
+- build: 依赖地板对齐（矩阵地板波次）——新地板：github.com/oekit/pkg v0.60.0 。零行为变化；已发布产物的 go.mod 地板此前滞后于矩阵登记版本，本版把新地板焊进已发布产物。
+
+## [v0.12.0] — 2026-11-21
+
+- 第三轮设计/缺陷审计（2026-11-21）network 修复：
+
+- feat: mq 新增 v2 投递契约——Subscribe(ctx, subject, handler func(ctx, Message) error)、Message（Ack/Nak/Term/Headers/AckDeadline）、SubscriptionV2.Unsubscribe(ctx) 有界幂等、MQClientV2；显式 Ack/Nak/Term 优先、未处置时 nil=Ack/error=Nak、ErrAckUnsupported 禁止伪装确认；旧接口 Deprecated 指向 v2（#251）
+- fix: sshx sleepRedial 已委托 timex.SleepContext（承接前轮）；conn 抖动 rand/v2
+
+关联问题单：network#251。
+
+## [v0.11.4] — 2026-11-19
+
+- - refactor: sshx sleepRedial 委托 timex.SleepContext 单源（#530 点名的最后一个消费方，原为手写 timer+select 同构实现，行为逐字等价并补直通/取消用例）；conn manager 抖动随机源迁 math/rand/v2（矩阵 #386 标准，同签名直替）（#244）
+
+关联问题单：network#244。
+
+## [v0.11.3] — 2026-11-18
+
+- nil-ctx 兜底收敛 contextx.OrBackground(#159 口径单源收尾,6 处);地板对齐 pkg v0.53.0
+
+## [v0.11.2] — 2026-11-16
+
+- refactor: fmt.Errorf → oekit/pkg/errors 三形态对位替换（#520 替换波）+ 依赖地板抬至 pkg v0.52.0。文案逐字节同形（测试断言零修改），多 %w/%w 居中/哨兵前置形态按仓规保留
+
+## [v0.11.1] — 2026-11-15
+
+- StreamSpec.Storage 注释纠正为库事实（#219）：FileStorage=iota=0，守卫恒等写，内嵌 NATS 测试断言落服务端形态
+- sshx keepalive 口径统一（#220）：连续累计超过 tolerated 次才触发（ErrBusy 不计入不清零），补确定性触发序钉子
+- streamx Sequence 补实现（#221）：Event.Sequence 字段、SliceSource 连续编号、Hub 扇出补号，承诺的丢包/重排判断面可用了
+
+关联问题单：network#219、network#220、network#221。
+
 ## [v0.11.0] — 2026-11-13
 
 - **BREAKING**：删除 streamx.ErrStreamExhausted 别名（#104）——Source 契约口径唯一：耗尽即 io.EOF。下游迁移：errors.Is(err, ErrStreamExhausted) → errors.Is(err, io.EOF)（同一值，零行为变化）。地板随迁 pkg v0.48.0 / logx v0.11.0 / concurrency v0.36.0。
 
 ## [v0.10.4] — 2026-11-13
+
+> **旁支版本**：本节发布于 v0.11.0（同日 20:29）之后 56 分钟，版本号却低于 v0.11.0——内容 = v0.11.0 + 地板追平 pkg v0.48.0（#204），按旧线补发所致。**主线版本线以 v0.11.0 为准**，v0.10.4 不在主线版本线上（已登记 matrix-tools/scripts/version_line_known.json）。
 
 - panic 收编单源：msg handler 双路走 pkg/errors.Recovered（#180）+ 日志 err 键收口 logx.ErrKey（#176）
 

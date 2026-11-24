@@ -36,7 +36,8 @@ const DefaultKeepAliveInterval = 30 * time.Second
 // 既不应也不关的服务端会让这个请求卡在连接的整个余生里。
 const KeepAliveRequest = "keepalive@openssh.com"
 
-// keepAliveMissesTolerated 是连续失败多少次之后才判连接已死。
+// keepAliveMissesTolerated 是连续非 busy 错误累计**超过**本值才判连接已死
+// （本值 1 = 容忍 1 次抖动：首个错误只计数，连续第二个触发 onDead）。
 //
 // 一次是「不误判」的上限：一次写失败不能证明连接没了，而换掉一条好连接
 // 的代价是一次握手。
@@ -50,8 +51,13 @@ var ErrBusy = errors.New("the connection is busy")
 // StartKeepAlive 定期戳连接，直到 done 被关掉。
 //
 // poke 发出这个请求并报告发生了什么：ErrBusy 表示连接正忙着（跳过这一
-// 下），别的错误表示连接没了。onDead 在那时被调用——它是调用方自己的信号：
-// 把连接标记为坏掉，下次调用开一条新的。
+// 下——不计入也不清零），别的错误表示连接可能没了。但单次写失败不能证明
+// 连接死了（换掉一条好连接的代价是一次握手，见 keepAliveMissesTolerated），
+// 所以 onDead 在非 busy 错误**连续累计超过 keepAliveMissesTolerated 次**
+// 时才被调用（缺省 1：首个错误只计数、连续第二个才触发，中间成功一次即
+// 清零）——它是调用方自己的信号：把连接标记为坏掉，下次调用开一条新的。
+// 与常量注释同一契约（#220：本函数此前写「别的错误 onDead 在那时被调用」，
+// 与容忍一次抖动的实现互相矛盾）。
 //
 // interval 是参数，这样测试不必等半分钟才看到一次保活。零值即默认。
 //

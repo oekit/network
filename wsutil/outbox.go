@@ -23,6 +23,7 @@ import (
 	"sync/atomic"
 
 	"github.com/oekit/concurrency/async"
+	errors "github.com/oekit/pkg/errors"
 )
 
 // mu 让「Send 的关闭检查 + 入队」成为**同一个临界区**（#117）：Send 持
@@ -315,7 +316,7 @@ func (o *Outbox) writeSafe(msg []byte) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			wsLog.Error("write panic recovered, frame dropped", "panic", fmt.Sprintf("%v", r))
-			err = fmt.Errorf("wsutil: write panic: %v", r)
+			err = errors.Newf("wsutil: write panic: %v", r)
 		}
 	}()
 	return o.write(msg)

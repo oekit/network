@@ -92,6 +92,65 @@ func TestSliceSource_PreservesExplicitID(t *testing.T) {
 	}
 }
 
+// TestSliceSource_FillsSequenceContinuous 钉住 #221：SliceSource 为全部
+// 事件连续编号——显式 ID 的事件同样占号（序号 1..N 不跳），缺省 ID 按
+// 自己的号生成、因显式 ID 占号而跳号：丢包/重排判断读 Sequence，不读 ID。
+func TestSliceSource_FillsSequenceContinuous(t *testing.T) {
+	src := NewSliceSource([]Event{
+		{Type: "message", Data: "a"}, // 无 ID → seq-1, Sequence 1
+		{ID: "custom-2", Data: "b"},  // 显式 ID → Sequence 2（占号）
+		{Type: "message", Data: "c"}, // 无 ID → seq-3, Sequence 3
+	})
+	defer src.Close()
+
+	ctx := context.Background()
+	ev1, err := src.Next(ctx)
+	if err != nil {
+		t.Fatalf("Next 1: %v", err)
+	}
+	ev2, _ := src.Next(ctx)
+	ev3, _ := src.Next(ctx)
+
+	if ev1.Sequence != 1 || ev2.Sequence != 2 || ev3.Sequence != 3 {
+		t.Fatalf("sequences = %d,%d,%d, want 1,2,3（显式 ID 事件也占号，#221）",
+			ev1.Sequence, ev2.Sequence, ev3.Sequence)
+	}
+	// ID 序列因显式 ID 占号而跳号——这正是不能拿 ID 当序号判丢包的原因。
+	if ev1.ID != "seq-1" || ev2.ID != "custom-2" || ev3.ID != "seq-3" {
+		t.Fatalf("IDs = %q,%q,%q, want seq-1/custom-2/seq-3", ev1.ID, ev2.ID, ev3.ID)
+	}
+}
+
+// TestHub_FillsAndPreservesSequence 钉住 #221：Hub 扇出时给未带号的事件
+// 补号（本 Hub 单调递增），已带号的透传不覆盖——所有 sink 看到同一序号。
+func TestHub_FillsAndPreservesSequence(t *testing.T) {
+	src := &fakeSource{events: []Event{
+		{ID: "a", Sequence: 7}, // 已带号：透传
+		{ID: "b"},              // 未带号：Hub 补号
+		{ID: "c"},              // 未带号：Hub 补号（连续）
+	}}
+	sink := &fakeSink{}
+	h := NewHub()
+	h.AttachSource(src)
+	h.AttachSink(sink)
+	if err := h.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if len(sink.events) != 3 {
+		t.Fatalf("sink got %d events, want 3", len(sink.events))
+	}
+	if got := sink.events[0].Sequence; got != 7 {
+		t.Errorf("已带号事件应透传，got Sequence=%d, want 7", got)
+	}
+	if got := sink.events[1].Sequence; got != 1 {
+		t.Errorf("第 1 个未带号事件应补号 1，got %d", got)
+	}
+	if got := sink.events[2].Sequence; got != 2 {
+		t.Errorf("第 2 个未带号事件应补号 2（连续），got %d", got)
+	}
+}
+
 // TestSliceSource_ContextCancel 验证 ctx 取消时 Next 返回 ctx.Err()。
 func TestSliceSource_ContextCancel(t *testing.T) {
 	src := NewSliceSource([]Event{{Data: "a"}, {Data: "b"}})

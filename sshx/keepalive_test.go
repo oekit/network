@@ -52,6 +52,59 @@ func TestStartKeepAlive_ToleratesOneMiss(t *testing.T) {
 	}
 }
 
+// TestStartKeepAlive_TriggerOnSecondConsecutiveError 钉住 #220 口径：首个
+// 非 busy 错误只计数（容忍单次抖动），**连续第二个**才触发 onDead——
+// 「第几个错误触发」是确定的，与函数文档/常量注释同一契约。
+func TestStartKeepAlive_TriggerOnSecondConsecutiveError(t *testing.T) {
+	done := make(chan struct{})
+	defer close(done)
+
+	dead := make(chan struct{})
+	calls := 0
+	StartKeepAlive(func() error {
+		calls++
+		return errors.New("the connection is gone")
+	}, done, func() { close(dead) }, 10*time.Millisecond)
+
+	select {
+	case <-dead:
+	case <-time.After(5 * time.Second):
+		t.Fatal("onDead was never called")
+	}
+	// onDead 触发后 goroutine 退出，不会再有 poke——calls 在此读取无并发写。
+	if calls != 2 {
+		t.Fatalf("onDead 在第 %d 个连续错误触发，应为第 2 个（keepAliveMissesTolerated=1，#220）", calls)
+	}
+}
+
+// TestStartKeepAlive_BusyDoesNotResetMisses 钉住 #220 的 ErrBusy 细节：
+// ErrBusy 既不计入也不清零——error → busy → error 在**第 2 个非 busy
+// 错误**（第 3 次 poke）触发 onDead，判定窗口是连续非 busy 错误计数，
+// 不是 wall-clock 或 poke 次数。
+func TestStartKeepAlive_BusyDoesNotResetMisses(t *testing.T) {
+	done := make(chan struct{})
+	defer close(done)
+
+	dead := make(chan struct{})
+	calls := 0
+	StartKeepAlive(func() error {
+		calls++
+		if calls == 1 || calls == 3 {
+			return errors.New("the connection is gone")
+		}
+		return ErrBusy
+	}, done, func() { close(dead) }, 10*time.Millisecond)
+
+	select {
+	case <-dead:
+	case <-time.After(5 * time.Second):
+		t.Fatal("onDead was never called")
+	}
+	if calls != 3 {
+		t.Fatalf("onDead 应在第 3 次 poke（第 2 个非 busy 错误）触发，实际 calls=%d（#220）", calls)
+	}
+}
+
 // TestStartKeepAlive_BusyIsNotDead 断言「连接正忙着」不算死。
 func TestStartKeepAlive_BusyIsNotDead(t *testing.T) {
 	done := make(chan struct{})

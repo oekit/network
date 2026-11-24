@@ -2,7 +2,7 @@ package conn
 
 import (
 	"errors"
-	"math/rand"
+	"math/rand/v2"
 	"net"
 	"sync"
 	"time"
