@@ -6,9 +6,9 @@ import (
 	"time"
 )
 
-// v2 订阅面（#251）：在 v1 [Subscriber] 之外**并行新增**一套可承载投递
-// 语义的契约，不改动既有接口（0.x 虽允许 breaking，但存量实现方不应被
-// 迫同批迁移——v1 已标注 Deprecated，指向本组接口）。
+// v2 订阅面（#251）：可承载投递语义的订阅契约（v1 订阅面已删除——
+// 见 doc.go；0.x 允许 breaking，发布/请求两半 [Publisher]/[Requester]
+// 未动）。
 //
 // 设计目标：JetStream/NATS 的至少一次投递（显式 Ack、Nak 重投、毒丸
 // Term）与订阅生命周期（ctx 上界、有界 Unsubscribe）必须在**接口层面**
@@ -121,7 +121,7 @@ type SubscriptionV2 interface {
 
 // SubscriberV2 是可表达 at-least-once 投递语义的订阅接口（#251）。
 //
-// 与 v1 [Subscriber] 的差异：Subscribe/QueueSubscribe 接收 ctx（界订阅
+// 相比已删除的 v1 订阅面：Subscribe/QueueSubscribe 接收 ctx（界订阅
 // 生命周期）、handler 返回 error（自动 Ack/Nak 的依据）、消息带显式处置
 // 入口与 headers/ack deadline，Unsubscribe 带关停上界。
 type SubscriberV2 interface {
@@ -137,9 +137,9 @@ type SubscriberV2 interface {
 	QueueSubscribe(ctx context.Context, subject, queue string, handler MessageHandlerV2) (SubscriptionV2, error)
 }
 
-// MQClientV2 是 v2 消息队列客户端接口：发布/请求两半沿用 v1（语义未变），
-// 订阅侧换用可表达 ack/重投的 [SubscriberV2]，关停仍是带 ctx 上界的
-// Close（#143）。
+// MQClientV2 是 v2 消息队列客户端接口：发布/请求两半（[Publisher]/
+// [Requester]）语义未变，订阅侧为可表达 ack/重投的 [SubscriberV2]，
+// 关停是带 ctx 上界的 Close（#143）。
 type MQClientV2 interface {
 	Publisher
 	SubscriberV2
@@ -147,7 +147,7 @@ type MQClientV2 interface {
 
 	// Close 关闭客户端连接。
 	//
-	// 签名与 v1 [MQClient].Close 相同：ctx 是关停上界，到期回退强制关闭；
-	// 实现须幂等，重复 Close 返回 nil。
+	// ctx 是关停上界（矩阵硬规则「组件 Close 统一 Close(ctx) error」），
+	// 到期回退强制关闭；实现须幂等，重复 Close 返回 nil。
 	Close(ctx context.Context) error
 }
